@@ -11,9 +11,10 @@ promote target=invocation_directory():
 # Authenticate gh CLI with a GitHub PAT (token not stored in shell history).
 gh-auth:
     #!/usr/bin/env bash
-    cat <<'EOF'
+    url=$'\e[4;36mhttps://github.com/settings/personal-access-tokens\e[0m'
+    cat <<EOF
     Create or renew a fine-grained PAT at:
-      https://github.com/settings/personal-access-tokens
+      $url
 
     Recommended settings for a sandboxed Claude Code:
       - Resource owner: your user (or org that owns this repo)
@@ -35,9 +36,10 @@ gh-auth:
 # --git-protocol https prevents glab's SSH insteadOf rewrite.
 glab-auth hostname="gitlab.com":
     #!/usr/bin/env bash
-    cat <<'EOF'
+    url=$'\e[4;36mhttps://gitlab.com/-/user_settings/personal_access_tokens\e[0m'
+    cat <<EOF
     Create or renew a fine-grained PAT at:
-      https://gitlab.com/-/user_settings/personal_access_tokens
+      $url
       (or your organisation's GitLab instance equivalent)
 
     Recommended scopes for a sandboxed Claude Code:
