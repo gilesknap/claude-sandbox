@@ -129,6 +129,12 @@ Paste (or chain into your existing postCreateCommand):
     "postCreateCommand": "$pc_cmd"
 
 (One-time edit. If you've already wired it, ignore this.)
+
+Optional — add to remoteEnv to disable gh/glab token binds (Claude
+won't be able to push; useful for read/edit-only sessions):
+
+    // "CLAUDE_SANDBOX_NO_FORGE": "1"
+
 EOF
 }
 

@@ -10,7 +10,7 @@ yourself if you want it locally).
 
 Each row maps a defence to the bwrap primitive that enforces it and
 the `/verify-sandbox` check number that proves it. Run
-`/verify-sandbox` from inside Claude to execute the full battery (16
+`/verify-sandbox` from inside Claude to execute the full battery (17
 PASS/FAIL checks + 10 adversarial breakout probes; the command exits
 non-zero on any FAIL, so it's usable as a CI assertion).
 
@@ -75,7 +75,7 @@ Claude. The deliberate exposures:
 
 | Path | Mode | Why |
 |---|---|---|
-| Workspace | rw | The whole point of Claude — see [workspace visibility caveat](#workspace-visibility-caveat) below. Resolution: `CLAUDE_SANDBOX_WORKSPACE_ROOT` if set; else `/workspaces` when `$PWD` is under it (so sibling devcontainer projects are writable); else `$PWD` |
+| Workspace | rw | The whole point of Claude — see [workspace visibility caveat](#workspace-visibility-caveat) below. Default: `$PWD` (only the current project is writable). Override: set `CLAUDE_SANDBOX_WORKSPACE_ROOT=/workspaces` in `remoteEnv` to restore the old broad bind and make sibling devcontainer projects writable. Extra paths: `~/.config/claude-sandbox/allow-write.conf` (one absolute path per line; blank lines and `#` comments ignored) |
 | `/etc/claude-gitconfig` | r | Curated gitconfig: gh/glab credential helpers for `https://github.com` and `https://gitlab.diamond.ac.uk`, ssh→https `insteadOf` rewrites, regenerated at every shadow launch from your host's current `user.name`/`user.email` |
 | `/etc/gitconfig` | r | Host's system gitconfig is reachable read-only but neutralised for `git` because `GIT_CONFIG_SYSTEM=/dev/null` — see [gitconfig defence-in-depth](#gitconfig-defence-in-depth) |
 | `/root/.claude/` | rw | Claude's state, settings, skills, hooks. `install.sh` symlinks this to `/user-terminal-config/.claude` so the tree persists across rebuilds and is shared with every other devcontainer that mounts the same `terminal-config` dir |
@@ -211,13 +211,50 @@ intact.
 
 </details>
 
+## PAT hygiene
+
+`gh` and `glab` store personal access tokens in `~/.config/gh/` and
+`~/.config/glab-cli/`, which are bound rw into the sandbox so Claude
+can push code. A compromised session could use those tokens to push to
+any repository the PAT covers, modify CI workflows, or reach other
+repos in the same organisation.
+
+**Recommended PAT shape:**
+
+- **Fine-grained token, single repo** — GitHub: Settings → Developer
+  settings → Fine-grained tokens. Grant write access only to the
+  repository you're actively working on.
+- **Short expiry** — 7–30 days. `just gh-auth` re-pastes in seconds.
+- **No `workflow` scope** unless Claude needs to modify GitHub Actions
+  files. No `admin:*` or org-wide write scopes.
+- **GitLab**: equivalent fine-grained project tokens, `api` scope only
+  if you need push; `read_repository` + `write_repository` otherwise.
+
+`just gh-auth` / `just glab-auth` keep the token out of shell history
+but do not enforce scope discipline — that's yours.
+
+### `CLAUDE_SANDBOX_NO_FORGE=1`
+
+If Claude doesn't need to push code in a given session, set this in
+your devcontainer's `remoteEnv` to skip the `gh`/`glab` token binds
+entirely. The credential helpers are also removed from the generated
+gitconfig, so `git push` will fail inside the sandbox — intentionally.
+
+```jsonc
+// .devcontainer/devcontainer.json → remoteEnv
+"CLAUDE_SANDBOX_NO_FORGE": "1"
+```
+
+Restart (or rebuild) the devcontainer for the change to take effect.
+A commented-out example is included in this repo's `devcontainer.json`.
+
 ## Verifying
 
 ```
 /verify-sandbox        # inside Claude
 ```
 
-Runs the 16 PASS/FAIL checks against the live process and prints a
+Runs the 17 PASS/FAIL checks against the live process and prints a
 summary table. Any FAIL exits the command non-zero (so you can use
 it as a CI assertion), and the FAIL line names which defence
 regressed. The full spec lives at

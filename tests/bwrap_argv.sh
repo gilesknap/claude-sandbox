@@ -222,36 +222,64 @@ assert_eq() {
 
 unset CLAUDE_SANDBOX_WORKSPACE_ROOT
 
-# Auto-detect: $PWD directly under /workspaces/ → /workspaces.
-assert_eq scenario8-auto-direct "/workspaces" \
+# Default: $PWD — no auto-promotion to /workspaces.
+assert_eq scenario8-pwd-direct "/workspaces/claude-sandbox2" \
     "$(resolve_workspace_root /workspaces/claude-sandbox2)"
 
-# Auto-detect: $PWD nested deeper under /workspaces/ → still /workspaces.
-assert_eq scenario8-auto-nested "/workspaces" \
+assert_eq scenario8-pwd-nested "/workspaces/claude-sandbox2/sub/deeper" \
     "$(resolve_workspace_root /workspaces/claude-sandbox2/sub/deeper)"
 
-# Fallback: $PWD outside /workspaces/ → $PWD itself (legacy behaviour).
+# $PWD outside /workspaces/ → $PWD itself.
 assert_eq scenario8-fallback-tmp "/tmp/myproject" \
     "$(resolve_workspace_root /tmp/myproject)"
 
-# Edge: $PWD is /workspaces itself (no trailing slash, not /workspaces/X)
-# → falls through to $PWD. Matches the literal /workspaces/ prefix check.
+# $PWD is /workspaces itself → /workspaces (coincidentally same as $PWD).
 assert_eq scenario8-edge-bare "/workspaces" \
     "$(resolve_workspace_root /workspaces)"
 
 # Override: CLAUDE_SANDBOX_WORKSPACE_ROOT wins regardless of $PWD.
-assert_eq scenario8-override-from-workspaces "/srv/custom" \
+assert_eq scenario8-override-custom "/srv/custom" \
     "$(CLAUDE_SANDBOX_WORKSPACE_ROOT=/srv/custom resolve_workspace_root /workspaces/foo)"
 
 assert_eq scenario8-override-from-tmp "/srv/custom" \
     "$(CLAUDE_SANDBOX_WORKSPACE_ROOT=/srv/custom resolve_workspace_root /tmp/bar)"
 
-# Empty override is treated as unset — falls back to auto-detect / $PWD.
-assert_eq scenario8-empty-override-auto "/workspaces" \
+# Migration knob: set to /workspaces to restore the old broad bind.
+assert_eq scenario8-restore-broad "/workspaces" \
+    "$(CLAUDE_SANDBOX_WORKSPACE_ROOT=/workspaces resolve_workspace_root /workspaces/foo)"
+
+# Empty override treated as unset — falls back to $PWD.
+assert_eq scenario8-empty-override "/workspaces/foo" \
     "$(CLAUDE_SANDBOX_WORKSPACE_ROOT= resolve_workspace_root /workspaces/foo)"
 
 assert_eq scenario8-empty-override-fallback "/tmp/bar" \
     "$(CLAUDE_SANDBOX_WORKSPACE_ROOT= resolve_workspace_root /tmp/bar)"
+
+# --- Scenario 9: allow-write.conf extra rw binds ---
+EXTRA_BIND="$(mktemp -d)"
+trap 'rm -rf "$TMPHOME" "$EXTRA_BIND"' EXIT
+mkdir -p "$TMPHOME/.config/claude-sandbox"
+cat > "$TMPHOME/.config/claude-sandbox/allow-write.conf" <<EOF
+# full-line comment
+$EXTRA_BIND
+  /nonexistent/sandbox/extra/path
+EOF
+
+ARGV9="$(HOME="$TMPHOME" CLAUDE_SANDBOX_GITCONFIG_PATH=/etc/claude-gitconfig \
+    bwrap_argv_build "$TMPHOME" /test/.local/bin/claude)"
+assert_contains scenario9-conf-bind "$ARGV9" "$EXTRA_BIND"
+assert_not_contains scenario9-nonexist "$ARGV9" "/nonexistent/sandbox/extra/path"
+
+# --- Scenario 10: CLAUDE_SANDBOX_NO_FORGE=1 omits forge token dirs ---
+# $TMPHOME/.config/gh and glab-cli were created in scenario 4b.
+ARGV10="$(HOME="$TMPHOME" CLAUDE_SANDBOX_GITCONFIG_PATH=/etc/claude-gitconfig \
+    CLAUDE_SANDBOX_NO_FORGE=1 \
+    bwrap_argv_build "$TMPHOME" /test/.local/bin/claude)"
+assert_not_contains scenario10-no-gh "$ARGV10" "$TMPHOME/.config/gh"
+assert_not_contains scenario10-no-glab "$ARGV10" "$TMPHOME/.config/glab-cli"
+# Non-forge binds remain present.
+assert_contains scenario10-claude "$ARGV10" "$TMPHOME/.claude"
+assert_contains scenario10-cache "$ARGV10" "$TMPHOME/.cache"
 
 echo "bwrap_argv.sh: $PASSED passed / $FAILED failed"
 [ "$FAILED" -eq 0 ]

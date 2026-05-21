@@ -9,6 +9,10 @@
         // Allow X11 apps to run inside the container.
         "DISPLAY": "${localEnv:DISPLAY}",
         "IN_DEVCONTAINER": "1"
+        // Uncomment to skip gh/glab token binds — Claude won't be able to
+        // push to any repository. Useful for read/edit-only sessions where
+        // you don't want forge credentials accessible inside the sandbox.
+        // "CLAUDE_SANDBOX_NO_FORGE": "1"
     },
     "customizations": {
         "vscode": {
