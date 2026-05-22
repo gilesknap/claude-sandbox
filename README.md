@@ -20,7 +20,7 @@ cd claude-sandbox
 
 Then run `claude` as usual — the shadow on `$PATH` wraps every
 invocation in `bwrap`. Run `/verify-sandbox` from inside a session
-to confirm the 16-check battery + 10 adversarial breakout probes
+to confirm the 17-check battery + 10 adversarial breakout probes
 pass.
 
 The installer is idempotent: re-run after a devcontainer rebuild and
@@ -81,7 +81,7 @@ TIOCSTI terminal injection. Out of scope are workspace contents
 /verify-sandbox        # inside Claude
 ```
 
-Runs the 16 PASS/FAIL battery + 10 adversarial breakout probes
+Runs the 17 PASS/FAIL battery + 10 adversarial breakout probes
 against the live process and exits non-zero on any FAIL. The spec
 lives at `.claude/commands/verify-sandbox.md`.
 
@@ -133,6 +133,26 @@ edit; subsequent `just promote` runs are byte-stable.
 and does NOT touch `~/.claude` — that channel stays reserved for
 cross-container shared state (OAuth, memories).
 
+## Workspace scope
+
+The sandbox makes only `$PWD` writable by default — sibling projects
+under `/workspaces/` are read-only. To restore the old broad bind:
+
+```jsonc
+// .devcontainer/devcontainer.json → remoteEnv
+"CLAUDE_SANDBOX_WORKSPACE_ROOT": "/workspaces"
+```
+
+For extra writable paths without widening to all of `/workspaces`, add
+them one per line to `~/.config/claude-sandbox/allow-write.conf`
+(blank lines and `#` comments ignored; non-existent paths skipped):
+
+```
+# allow-write.conf
+/workspaces/shared-notes
+/workspaces/sibling-project
+```
+
 ## Authenticating with forges
 
 ```
@@ -144,6 +164,20 @@ just glab-auth gitlab.diamond.ac.uk
 Both walk you through a fine-grained-PAT prompt, feed the token to
 the respective CLI's `auth login`, and unset the variable. Tokens
 never enter shell history.
+
+### PAT hygiene
+
+`gh`/`glab` tokens are bound rw into the sandbox so Claude can push.
+Minimise blast radius: use fine-grained single-repo PATs with a 7–30
+day expiry and no `workflow` or admin scopes. See
+[`README-CLAUDE.md`](./README-CLAUDE.md#pat-hygiene) for the full
+guidance.
+
+To run a session where Claude can't push at all, set
+`CLAUDE_SANDBOX_NO_FORGE=1` in your devcontainer's `remoteEnv` (a
+commented example is in `.devcontainer/devcontainer.json`). This
+skips the `gh`/`glab` token binds and removes the credential helpers
+from the generated gitconfig.
 
 ## Development
 

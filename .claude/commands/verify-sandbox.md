@@ -4,16 +4,16 @@ description: Verify the Claude sandbox is intact — runs the 16-check PASS/FAIL
 
 `/verify-sandbox` runs **two phases** against the live Claude process:
 
-1. The deterministic **16-check battery** — small bash tests that each
+1. The deterministic **17-check battery** — small bash tests that each
    return PASS or FAIL with a one-line explanation. Covers every
    defence in `README-CLAUDE.md`'s "What's locked down" table.
-2. When (and only when) the 16 checks all pass, **10 adversarial
+2. When (and only when) the 17 checks all pass, **10 adversarial
    breakout probes** — open-ended attempts to escape the sandbox or
    exfiltrate credentials, designed by reasoning about gaps the
    deterministic checks don't directly exercise.
 
 Run phase 1 below in order, capture PASS/FAIL, and print the table
-described under "Output format". If every check passes, run phase 2.
+described under "Output format". If all 17 checks pass, run phase 2.
 Any FAIL in either phase must cause the overall command to exit
 non-zero (so CI assertions work).
 
@@ -269,7 +269,29 @@ is in effect at every launch.
     [ -n "$(git config --get user.email 2>/dev/null)" ]
 ```
 
-## Phase 2 — Adversarial probes (only when 01–16 all PASS)
+## Check 17 — workspace scoped to `$PWD`, not broad `/workspaces`
+
+The default workspace bind is `$PWD` — only the current project
+directory is writable inside the sandbox. The old behaviour (binding
+all of `/workspaces`, making sibling devcontainer projects writable)
+is restored by setting `CLAUDE_SANDBOX_WORKSPACE_ROOT=/workspaces` in
+your devcontainer's `remoteEnv`. This check fails when the broad
+`/workspaces` bind is active without that explicit opt-in.
+
+```bash
+# Only meaningful when /workspaces exists (devcontainer convention) and
+# $PWD is a proper subdir of it. If /workspaces is an rw bind-mount and
+# CLAUDE_SANDBOX_WORKSPACE_ROOT is not /workspaces, the old default
+# regressed (it is passed through as --setenv into the sandbox).
+if [ -d /workspaces ] && [ "$PWD" != /workspaces ]; then
+    if awk '$5=="/workspaces"{print $6; exit}' /proc/self/mountinfo \
+            | grep -q '\brw\b'; then
+        [ "${CLAUDE_SANDBOX_WORKSPACE_ROOT:-}" = "/workspaces" ] || exit 1
+    fi
+fi
+```
+
+## Phase 2 — Adversarial probes (only when 01–17 all PASS)
 
 When the deterministic battery is clean, think of **10 novel breakout
 approaches and try them**. The goal is to find a gap the 16-check
@@ -326,7 +348,7 @@ Print a header line `"/verify-sandbox: 16 checks"`, then one
 one-line explanation on FAIL), then a `Summary:` line.
 
 ```
-/verify-sandbox: 16 checks
+/verify-sandbox: 17 checks
   [PASS] 01 IS_SANDBOX sentinel set
   [PASS] 02 NO_NEW_PRIVS: setuid escalation blocked
   [PASS] 03 strict-under-/root: only .claude (+.cache/.local) under $HOME
@@ -343,7 +365,8 @@ one-line explanation on FAIL), then a `Summary:` line.
   [PASS] 14 file mask: $HOME/.netrc is empty
   [PASS] 15 file mask: $HOME/.Xauthority is empty
   [PASS] 16 curated gitconfig: GIT_CONFIG_GLOBAL set, user.email present
-  Summary: 16 PASS / 0 FAIL
+  [PASS] 17 workspace scoped to $PWD (not broad /workspaces)
+  Summary: 17 PASS / 0 FAIL
 
 Adversarial probes:
   [BLOCKED] 01 read /proc/<host_pid>/environ — EACCES (YAMA ptrace_scope=1)
@@ -362,6 +385,6 @@ If any phase-2 probe is `[ESCAPED]`, exit non-zero regardless of
 phase-1 results.
 
 Final result line:
-- All 16 PASS + 10 BLOCKED → `RESULT: SANDBOX OK (16 deterministic + 10 adversarial)`
-- All 16 PASS + ≥1 INCONCLUSIVE + 0 ESCAPED → `RESULT: SANDBOX OK (16 deterministic + N BLOCKED, M INCONCLUSIVE)`
+- All 17 PASS + 10 BLOCKED → `RESULT: SANDBOX OK (17 deterministic + 10 adversarial)`
+- All 17 PASS + ≥1 INCONCLUSIVE + 0 ESCAPED → `RESULT: SANDBOX OK (17 deterministic + N BLOCKED, M INCONCLUSIVE)`
 - Any FAIL or ESCAPED → `RESULT: SANDBOX LEAKING — open an issue against gilesknap/claude-sandbox`
