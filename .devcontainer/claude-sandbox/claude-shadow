@@ -45,10 +45,10 @@ fi
 export CLAUDE_SANDBOX_GITCONFIG_PATH="$GITCONFIG_PATH"
 
 # BwrapArgvBuilder: pure-function emitting the bwrap argv. Deterministic
-# given (workspace, real_claude, "$@"), ($HOME, $CLAUDE_SANDBOX_GITCONFIG_PATH,
-# $CLAUDE_SANDBOX_NO_FORGE), and the contents of
-# ~/.config/claude-sandbox/allow-write.conf when present. No subprocesses —
-# sourced by tests/bwrap_argv.sh and called in isolation.
+# given (workspace, real_claude, "$@") and ($HOME,
+# $CLAUDE_SANDBOX_GITCONFIG_PATH, $CLAUDE_SANDBOX_NO_FORGE,
+# $CLAUDE_SANDBOX_ALLOW_WRITE). No I/O, no subprocesses — sourced by
+# tests/bwrap_argv.sh and called in isolation.
 #
 # Procfs is always `--ro-bind /proc /proc` (no per-launch probe). Trade-
 # off: host PIDs are enumerable from inside the sandbox (info-disclosure),
@@ -144,20 +144,13 @@ bwrap_argv_build() {
     if [ -n "$workspace" ] && [ -d "$workspace" ]; then
         argv+=( --bind "$workspace" "$workspace" )
     fi
-
-    # Extra rw binds from ~/.config/claude-sandbox/allow-write.conf.
-    # Lines are absolute paths; blank lines and # comments ignored.
-    # Paths that don't exist at launch time are silently skipped.
-    local conf="$home/.config/claude-sandbox/allow-write.conf"
-    if [ -f "$conf" ]; then
-        local line extra_path
-        while IFS= read -r line; do
-            extra_path="${line%%#*}"
-            extra_path="${extra_path#"${extra_path%%[![:space:]]*}"}"
-            extra_path="${extra_path%"${extra_path##*[![:space:]]}"}"
+    if [ -n "${CLAUDE_SANDBOX_ALLOW_WRITE:-}" ]; then
+        while IFS= read -r extra_path; do
             [ -z "$extra_path" ] && continue
-            [ -d "$extra_path" ] && argv+=( --bind "$extra_path" "$extra_path" )
-        done < "$conf"
+            if [ -d "$extra_path" ] || [ -f "$extra_path" ]; then
+                argv+=( --bind "$extra_path" "$extra_path" )
+            fi
+        done <<< "$CLAUDE_SANDBOX_ALLOW_WRITE"
     fi
 
     # Defence-in-depth file masks. Strict-under-/root already hides the
@@ -259,6 +252,48 @@ resolve_workspace_root() {
     fi
 }
 
+# parse_config: read .devcontainer/claude-sandbox.conf and apply
+# recognised keys. Format: "key = value" or bare "key" for boolean
+# flags; # comments and blank lines are ignored.
+# Env vars already set take precedence — the config supplies defaults.
+parse_config() {
+    local conf="$1"
+    [ -f "$conf" ] || return 0
+    local line key value
+    while IFS= read -r line || [ -n "$line" ]; do
+        line="${line%%#*}"
+        line="${line#"${line%%[![:space:]]*}"}"
+        line="${line%"${line##*[![:space:]]}"}"
+        [ -z "$line" ] && continue
+        if [[ "$line" == *=* ]]; then
+            key="${line%%=*}"
+            key="${key%"${key##*[![:space:]]}"}"
+            value="${line#*=}"
+            value="${value#"${value%%[![:space:]]*}"}"
+            value="${value%"${value##*[![:space:]]}"}"
+        else
+            key="$line"
+            value=""
+        fi
+        case "$key" in
+            workspace-root)
+                [ -n "$value" ] && : "${CLAUDE_SANDBOX_WORKSPACE_ROOT:=$value}"
+                export CLAUDE_SANDBOX_WORKSPACE_ROOT
+                ;;
+            no-forge)
+                : "${CLAUDE_SANDBOX_NO_FORGE:=1}"
+                export CLAUDE_SANDBOX_NO_FORGE
+                ;;
+            allow-write)
+                [ -z "$value" ] && continue
+                CLAUDE_SANDBOX_ALLOW_WRITE="${CLAUDE_SANDBOX_ALLOW_WRITE:+${CLAUDE_SANDBOX_ALLOW_WRITE}
+}${value}"
+                export CLAUDE_SANDBOX_ALLOW_WRITE
+                ;;
+        esac
+    done < "$conf"
+}
+
 # Guard: tests source this file with CLAUDE_SHADOW_SOURCE_ONLY=1 so
 # only the function definitions are pulled into scope.
 if [ "$CLAUDE_SHADOW_SOURCE_ONLY" = "1" ]; then
@@ -320,6 +355,7 @@ EOF
 EOF
 } > "$CLAUDE_SANDBOX_GITCONFIG_PATH"
 
+parse_config "$PWD/.devcontainer/claude-sandbox.conf"
 WORKSPACE_ROOT="$(resolve_workspace_root "$PWD")"
 mapfile -t ARGV < <(bwrap_argv_build "$WORKSPACE_ROOT" "$REAL_CLAUDE" "$@")
 

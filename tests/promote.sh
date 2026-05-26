@@ -95,6 +95,8 @@ expect_byte_equal "$REPO_ROOT/.devcontainer/claude-sandbox/install.sh"    "$TARG
 expect_byte_equal "$REPO_ROOT/.devcontainer/claude-sandbox/claude-shadow" "$TARGET/.devcontainer/claude-sandbox/claude-shadow"
 expect_byte_equal "$REPO_ROOT/.devcontainer/claude-sandbox/promote.sh"    "$TARGET/.devcontainer/claude-sandbox/promote.sh"
 expect_byte_equal "$REPO_ROOT/justfile"                                   "$TARGET/justfile"
+# Config file — should land in target on first promote.
+expect_file ".devcontainer/claude-sandbox.conf"
 
 # Root `install` shim must NOT land in the target.
 if [ ! -e "$TARGET/install" ]; then
@@ -226,6 +228,32 @@ if bash "$PROMOTE" "$NONEXISTENT" >/dev/null 2>&1; then
     fail "promote did not refuse a missing target dir"
 else
     pass
+fi
+
+# ============================================================
+# Section 5: claude-sandbox.conf survives re-promote (user edits kept).
+# ============================================================
+CONF_TARGET="$(mktemp -d)"
+trap 'rm -rf "$TARGET" "$DC_TARGET" "$APPEND_TARGET" "$CONF_TARGET"' EXIT
+
+run_promote "$CONF_TARGET" || fail "promote on clean conf target exited non-zero"
+CONF="$CONF_TARGET/.devcontainer/claude-sandbox.conf"
+if [ -f "$CONF" ]; then
+    pass
+else
+    fail "claude-sandbox.conf not placed on first promote"
+fi
+
+# Simulate user edit.
+echo "allow-write = /workspaces/peer" >> "$CONF"
+CONF_SUM_A="$(sha256sum "$CONF" | awk '{print $1}')"
+
+run_promote "$CONF_TARGET" || fail "promote re-run with customised conf exited non-zero"
+CONF_SUM_B="$(sha256sum "$CONF" | awk '{print $1}')"
+if [ "$CONF_SUM_A" = "$CONF_SUM_B" ]; then
+    pass
+else
+    fail "promote overwrote user-customised claude-sandbox.conf"
 fi
 
 echo "promote.sh: $PASSED passed / $FAILED failed"

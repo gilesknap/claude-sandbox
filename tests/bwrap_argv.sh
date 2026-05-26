@@ -255,31 +255,113 @@ assert_eq scenario8-empty-override "/workspaces/foo" \
 assert_eq scenario8-empty-override-fallback "/tmp/bar" \
     "$(CLAUDE_SANDBOX_WORKSPACE_ROOT= resolve_workspace_root /tmp/bar)"
 
-# --- Scenario 9: allow-write.conf extra rw binds ---
-EXTRA_BIND="$(mktemp -d)"
-trap 'rm -rf "$TMPHOME" "$EXTRA_BIND"' EXIT
-mkdir -p "$TMPHOME/.config/claude-sandbox"
-cat > "$TMPHOME/.config/claude-sandbox/allow-write.conf" <<EOF
-# full-line comment
-$EXTRA_BIND
-  /nonexistent/sandbox/extra/path
-EOF
-
-ARGV9="$(HOME="$TMPHOME" CLAUDE_SANDBOX_GITCONFIG_PATH=/etc/claude-gitconfig \
-    bwrap_argv_build "$TMPHOME" /test/.local/bin/claude)"
-assert_contains scenario9-conf-bind "$ARGV9" "$EXTRA_BIND"
-assert_not_contains scenario9-nonexist "$ARGV9" "/nonexistent/sandbox/extra/path"
-
-# --- Scenario 10: CLAUDE_SANDBOX_NO_FORGE=1 omits forge token dirs ---
+# --- Scenario 9: CLAUDE_SANDBOX_NO_FORGE=1 omits forge token dirs ---
 # $TMPHOME/.config/gh and glab-cli were created in scenario 4b.
-ARGV10="$(HOME="$TMPHOME" CLAUDE_SANDBOX_GITCONFIG_PATH=/etc/claude-gitconfig \
+ARGV9="$(HOME="$TMPHOME" CLAUDE_SANDBOX_GITCONFIG_PATH=/etc/claude-gitconfig \
     CLAUDE_SANDBOX_NO_FORGE=1 \
     bwrap_argv_build "$TMPHOME" /test/.local/bin/claude)"
-assert_not_contains scenario10-no-gh "$ARGV10" "$TMPHOME/.config/gh"
-assert_not_contains scenario10-no-glab "$ARGV10" "$TMPHOME/.config/glab-cli"
-# Non-forge binds remain present.
-assert_contains scenario10-claude "$ARGV10" "$TMPHOME/.claude"
-assert_contains scenario10-cache "$ARGV10" "$TMPHOME/.cache"
+assert_not_contains scenario9-no-gh   "$ARGV9" "$TMPHOME/.config/gh"
+assert_not_contains scenario9-no-glab "$ARGV9" "$TMPHOME/.config/glab-cli"
+assert_contains     scenario9-claude  "$ARGV9" "$TMPHOME/.claude"
+assert_contains     scenario9-cache   "$ARGV9" "$TMPHOME/.cache"
+
+# --- Scenario 10: CLAUDE_SANDBOX_ALLOW_WRITE adds extra rw bind ---
+mkdir -p "$TMPHOME/extra-rw" "$TMPHOME/extra-rw2"
+ARGV10a="$(HOME="$TMPHOME" CLAUDE_SANDBOX_ALLOW_WRITE="$TMPHOME/extra-rw" \
+    CLAUDE_SANDBOX_GITCONFIG_PATH=/etc/claude-gitconfig \
+    bwrap_argv_build "$TMPHOME" /test/.local/bin/claude)"
+assert_contains scenario10-single "$ARGV10a" "$TMPHOME/extra-rw"
+
+ARGV10b="$(HOME="$TMPHOME" \
+    CLAUDE_SANDBOX_ALLOW_WRITE="$TMPHOME/extra-rw
+$TMPHOME/extra-rw2" \
+    CLAUDE_SANDBOX_GITCONFIG_PATH=/etc/claude-gitconfig \
+    bwrap_argv_build "$TMPHOME" /test/.local/bin/claude)"
+assert_contains scenario10-multi-a "$ARGV10b" "$TMPHOME/extra-rw"
+assert_contains scenario10-multi-b "$ARGV10b" "$TMPHOME/extra-rw2"
+
+# Non-existent allow-write path must NOT appear (silently skipped).
+ARGV10c="$(HOME="$TMPHOME" CLAUDE_SANDBOX_ALLOW_WRITE="/nonexistent/path" \
+    CLAUDE_SANDBOX_GITCONFIG_PATH=/etc/claude-gitconfig \
+    bwrap_argv_build "$TMPHOME" /test/.local/bin/claude)"
+assert_not_contains scenario10-absent "$ARGV10c" "/nonexistent/path"
+
+# --- Scenario 11: parse_config ---
+TMPCONF="$(mktemp)"
+trap 'rm -rf "$TMPHOME" "$TMPCONF"' EXIT
+
+assert_parse() {
+    local name="$1"; shift
+    if "$@"; then
+        PASSED=$((PASSED+1))
+    else
+        FAILED=$((FAILED+1))
+        echo "FAIL: $name" >&2
+    fi
+}
+
+# workspace-root
+printf 'workspace-root = /custom/root\n' > "$TMPCONF"
+assert_parse scenario11-workspace-root bash -c "
+    source \"$SHADOW\"
+    unset CLAUDE_SANDBOX_WORKSPACE_ROOT
+    parse_config \"$TMPCONF\"
+    [ \"\${CLAUDE_SANDBOX_WORKSPACE_ROOT:-}\" = '/custom/root' ]
+"
+
+# no-forge
+printf 'no-forge\n' > "$TMPCONF"
+assert_parse scenario11-no-forge bash -c "
+    source \"$SHADOW\"
+    unset CLAUDE_SANDBOX_NO_FORGE
+    parse_config \"$TMPCONF\"
+    [ \"\${CLAUDE_SANDBOX_NO_FORGE:-}\" = '1' ]
+"
+
+# allow-write single path
+printf 'allow-write = /some/path\n' > "$TMPCONF"
+assert_parse scenario11-allow-write-single bash -c "
+    source \"$SHADOW\"
+    unset CLAUDE_SANDBOX_ALLOW_WRITE
+    parse_config \"$TMPCONF\"
+    [ \"\${CLAUDE_SANDBOX_ALLOW_WRITE:-}\" = '/some/path' ]
+"
+
+# allow-write multiple paths
+printf 'allow-write = /path/one\nallow-write = /path/two\n' > "$TMPCONF"
+assert_parse scenario11-allow-write-multi bash -c "
+    source \"$SHADOW\"
+    unset CLAUDE_SANDBOX_ALLOW_WRITE
+    parse_config \"$TMPCONF\"
+    printf '%s\n' \"\$CLAUDE_SANDBOX_ALLOW_WRITE\" | grep -qxF '/path/one' &&
+    printf '%s\n' \"\$CLAUDE_SANDBOX_ALLOW_WRITE\" | grep -qxF '/path/two'
+"
+
+# comments and blank lines are ignored
+printf '# comment\n\nworkspace-root = /from/conf\n# another\n' > "$TMPCONF"
+assert_parse scenario11-comments bash -c "
+    source \"$SHADOW\"
+    unset CLAUDE_SANDBOX_WORKSPACE_ROOT
+    parse_config \"$TMPCONF\"
+    [ \"\${CLAUDE_SANDBOX_WORKSPACE_ROOT:-}\" = '/from/conf' ]
+"
+
+# env var wins over config file value
+printf 'workspace-root = /from/config\n' > "$TMPCONF"
+assert_parse scenario11-env-wins bash -c "
+    source \"$SHADOW\"
+    export CLAUDE_SANDBOX_WORKSPACE_ROOT=/from/env
+    parse_config \"$TMPCONF\"
+    [ \"\${CLAUDE_SANDBOX_WORKSPACE_ROOT:-}\" = '/from/env' ]
+"
+
+# absent config file is silently skipped
+assert_parse scenario11-absent bash -c "
+    source \"$SHADOW\"
+    unset CLAUDE_SANDBOX_WORKSPACE_ROOT
+    parse_config '/nonexistent/claude-sandbox.conf'
+    [ -z \"\${CLAUDE_SANDBOX_WORKSPACE_ROOT:-}\" ]
+"
 
 echo "bwrap_argv.sh: $PASSED passed / $FAILED failed"
 [ "$FAILED" -eq 0 ]
