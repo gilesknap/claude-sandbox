@@ -8,6 +8,10 @@
 promote target=invocation_directory():
     bash .devcontainer/claude-sandbox/promote.sh {{ target }}
 
+# Fetch ETF prices and post summary to Slack DM (needs SLACK_BOT_TOKEN in env).
+etf-monitor:
+    bash etf-monitor.sh
+
 # Authenticate gh CLI with a GitHub PAT (token not stored in shell history).
 gh-auth:
     #!/usr/bin/env bash
