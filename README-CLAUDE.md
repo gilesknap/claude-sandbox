@@ -10,7 +10,7 @@ yourself if you want it locally).
 
 Each row maps a defence to the bwrap primitive that enforces it and
 the `/verify-sandbox` check number that proves it. Run
-`/verify-sandbox` from inside Claude to execute the full battery (17
+`/verify-sandbox` from inside Claude to execute the full battery (18
 PASS/FAIL checks + 10 adversarial breakout probes; the command exits
 non-zero on any FAIL, so it's usable as a CI assertion).
 
@@ -75,7 +75,8 @@ Claude. The deliberate exposures:
 
 | Path | Mode | Why |
 |---|---|---|
-| Workspace | rw | The whole point of Claude — see [workspace visibility caveat](#workspace-visibility-caveat) below. Default: `$PWD` (only the current project is writable). Override: set `CLAUDE_SANDBOX_WORKSPACE_ROOT=/workspaces` in `remoteEnv` to restore the old broad bind and make sibling devcontainer projects writable. Extra paths: `~/.config/claude-sandbox/allow-write.conf` (one absolute path per line; blank lines and `#` comments ignored) |
+| Workspace | rw | The whole point of Claude — see [workspace visibility caveat](#workspace-visibility-caveat) below. Default: `$PWD` (only the current project is writable). Override: set `CLAUDE_SANDBOX_WORKSPACE_ROOT=/workspaces` in `remoteEnv` to restore the old broad bind and make sibling devcontainer projects writable. Extra paths: `allow-write = <abs-path>` lines in `/etc/claude-sandbox.conf` (one path per line; blank lines and `#` comments ignored) |
+| `/etc/claude-sandbox.conf` | r | Host-global sandbox config (`workspace-root`, `no-forge`, `allow-write`), placed by `install.sh` from the clone's `.devcontainer/claude-sandbox.conf` and read by the shadow at launch. Lives at `/etc`, **not** in the rw-bound workspace, so a compromised session can't rewrite it to widen the next launch's binds. Edit the clone conf + re-run `./install` (a rebuild does it via postCreate) to change it |
 | `/etc/claude-gitconfig` | r | Curated gitconfig: gh/glab credential helpers for `https://github.com` and `https://gitlab.diamond.ac.uk`, ssh→https `insteadOf` rewrites, regenerated at every shadow launch from your host's current `user.name`/`user.email` |
 | `/etc/gitconfig` | r | Host's system gitconfig is reachable read-only but neutralised for `git` because `GIT_CONFIG_SYSTEM=/dev/null` — see [gitconfig defence-in-depth](#gitconfig-defence-in-depth) |
 | `/root/.claude/` | rw | Claude's state, settings, skills, hooks. `install.sh` symlinks this to `/user-terminal-config/.claude` so the tree persists across rebuilds and is shared with every other devcontainer that mounts the same `terminal-config` dir |
@@ -254,7 +255,7 @@ A commented-out example is included in this repo's `devcontainer.json`.
 /verify-sandbox        # inside Claude
 ```
 
-Runs the 17 PASS/FAIL checks against the live process and prints a
+Runs the 18 PASS/FAIL checks against the live process and prints a
 summary table. Any FAIL exits the command non-zero (so you can use
 it as a CI assertion), and the FAIL line names which defence
 regressed. The full spec lives at

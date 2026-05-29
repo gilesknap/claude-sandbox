@@ -128,11 +128,29 @@ else
     fail "settings.json .statusLine.type is not 'command'"
 fi
 
+# Config placement: install copies the clone's conf to the host-global
+# /etc/claude-sandbox.conf the shadow reads at launch (prefixed for the
+# tmpdir). Skip-if-absent in install_conf means this only asserts when
+# the clone actually carries a conf — which it does in-tree.
+CONF_DEST="$PREFIX/etc/claude-sandbox.conf"
+CONF_SRC="$REPO_ROOT/.devcontainer/claude-sandbox.conf"
+if [ -f "$CONF_DEST" ]; then
+    pass
+else
+    fail "config not placed at $CONF_DEST"
+fi
+if cmp -s "$CONF_SRC" "$CONF_DEST"; then
+    pass
+else
+    fail "installed config differs from source conf"
+fi
+
 # Idempotency: second install must be byte-for-byte stable.
 SHADOW_SUM_A="$(sha256sum "$SHADOW_DEST" | awk '{print $1}')"
 HOOK_SUM_A="$(sha256sum "$HOOK_DEST" | awk '{print $1}')"
 SL_SUM_A="$(sha256sum "$SL_DEST" | awk '{print $1}')"
 SETTINGS_SUM_A="$(sha256sum "$SETTINGS" | awk '{print $1}')"
+CONF_SUM_A="$(sha256sum "$CONF_DEST" | awk '{print $1}')"
 
 if ! run_install; then
     fail "second install run exited non-zero"
@@ -142,6 +160,7 @@ SHADOW_SUM_B="$(sha256sum "$SHADOW_DEST" | awk '{print $1}')"
 HOOK_SUM_B="$(sha256sum "$HOOK_DEST" | awk '{print $1}')"
 SL_SUM_B="$(sha256sum "$SL_DEST" | awk '{print $1}')"
 SETTINGS_SUM_B="$(sha256sum "$SETTINGS" | awk '{print $1}')"
+CONF_SUM_B="$(sha256sum "$CONF_DEST" | awk '{print $1}')"
 
 if [ "$SHADOW_SUM_A" = "$SHADOW_SUM_B" ]; then
     pass
@@ -162,6 +181,11 @@ if [ "$SETTINGS_SUM_A" = "$SETTINGS_SUM_B" ]; then
     pass
 else
     fail "settings.json drifted across install re-run"
+fi
+if [ "$CONF_SUM_A" = "$CONF_SUM_B" ]; then
+    pass
+else
+    fail "config drifted across install re-run"
 fi
 
 # Settings merge with pre-existing JSON: write a settings.json with
