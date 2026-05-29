@@ -20,7 +20,7 @@ cd claude-sandbox
 
 Then run `claude` as usual — the shadow on `$PATH` wraps every
 invocation in `bwrap`. Run `/verify-sandbox` from inside a session
-to confirm the 17-check battery + 10 adversarial breakout probes
+to confirm the 18-check battery + 10 adversarial breakout probes
 pass.
 
 The installer is idempotent: re-run after a devcontainer rebuild and
@@ -81,7 +81,7 @@ TIOCSTI terminal injection. Out of scope are workspace contents
 /verify-sandbox        # inside Claude
 ```
 
-Runs the 17 PASS/FAIL battery + 10 adversarial breakout probes
+Runs the 18 PASS/FAIL battery + 10 adversarial breakout probes
 against the live process and exits non-zero on any FAIL. The spec
 lives at `.claude/commands/verify-sandbox.md`.
 

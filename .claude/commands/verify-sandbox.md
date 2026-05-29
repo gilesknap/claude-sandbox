@@ -291,6 +291,30 @@ if [ -d /workspaces ] && [ "$PWD" != /workspaces ]; then
 fi
 ```
 
+## Check 18 — config read from `/etc`, not the workspace
+
+The shadow reads its config from the host-global
+`/etc/claude-sandbox.conf` (placed by `install.sh`), **not** from
+`$PWD/.devcontainer/claude-sandbox.conf`. The old per-workspace read
+sat inside the rw-bound workspace, so a compromised session could
+rewrite it (`allow-write = /`, `workspace-root = /`) and the next
+launch would honour it — a cross-session bind-escalation. `/etc` is
+not in the sandbox's rw set, closing that vector.
+
+This inspects the installed shadow on `$PATH` (visible read-only via
+`--ro-bind / /`): it must pin `CONFIG_PATH` to `/etc/...` and feed
+that to `parse_config`, with no `parse_config` call reading from
+`.devcontainer` (the old, attacker-writable call site). The negative
+match is scoped to the `parse_config` line so the `/etc` rationale
+comment — which legitimately names the source path — doesn't trip it.
+
+```bash
+shadow="$(command -v claude)"
+grep -qF 'CONFIG_PATH="/etc/claude-sandbox.conf"' "$shadow" \
+    && grep -qF 'parse_config "$CONFIG_PATH"' "$shadow" \
+    && ! grep -q 'parse_config.*\.devcontainer' "$shadow"
+```
+
 ## Phase 2 — Adversarial probes (only when 01–18 all PASS)
 
 When the deterministic battery is clean, think of **10 novel breakout
