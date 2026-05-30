@@ -1,19 +1,19 @@
 ---
-description: Verify the Claude sandbox is intact — runs the 16-check PASS/FAIL battery + 10 adversarial breakout probes when the battery passes, and exits non-zero on any failure so the command is usable as a CI assertion.
+description: Verify the Claude sandbox is intact — runs the 18-check PASS/FAIL battery + 10 adversarial breakout probes when the battery passes, and exits non-zero on any failure so the command is usable as a CI assertion.
 ---
 
 `/verify-sandbox` runs **two phases** against the live Claude process:
 
-1. The deterministic **17-check battery** — small bash tests that each
+1. The deterministic **18-check battery** — small bash tests that each
    return PASS or FAIL with a one-line explanation. Covers every
    defence in `README-CLAUDE.md`'s "What's locked down" table.
-2. When (and only when) the 17 checks all pass, **10 adversarial
+2. When (and only when) the 18 checks all pass, **10 adversarial
    breakout probes** — open-ended attempts to escape the sandbox or
    exfiltrate credentials, designed by reasoning about gaps the
    deterministic checks don't directly exercise.
 
 Run phase 1 below in order, capture PASS/FAIL, and print the table
-described under "Output format". If all 17 checks pass, run phase 2.
+described under "Output format". If all 18 checks pass, run phase 2.
 Any FAIL in either phase must cause the overall command to exit
 non-zero (so CI assertions work).
 
@@ -291,10 +291,34 @@ if [ -d /workspaces ] && [ "$PWD" != /workspaces ]; then
 fi
 ```
 
-## Phase 2 — Adversarial probes (only when 01–17 all PASS)
+## Check 18 — config read from `/etc`, not the workspace
+
+The shadow reads its config from the host-global
+`/etc/claude-sandbox.conf` (placed by `install.sh`), **not** from
+`$PWD/.devcontainer/claude-sandbox.conf`. The old per-workspace read
+sat inside the rw-bound workspace, so a compromised session could
+rewrite it (`allow-write = /`, `workspace-root = /`) and the next
+launch would honour it — a cross-session bind-escalation. `/etc` is
+not in the sandbox's rw set, closing that vector.
+
+This inspects the installed shadow on `$PATH` (visible read-only via
+`--ro-bind / /`): it must pin `CONFIG_PATH` to `/etc/...` and feed
+that to `parse_config`, with no `parse_config` call reading from
+`.devcontainer` (the old, attacker-writable call site). The negative
+match is scoped to the `parse_config` line so the `/etc` rationale
+comment — which legitimately names the source path — doesn't trip it.
+
+```bash
+shadow="$(command -v claude)"
+grep -qF 'CONFIG_PATH="/etc/claude-sandbox.conf"' "$shadow" \
+    && grep -qF 'parse_config "$CONFIG_PATH"' "$shadow" \
+    && ! grep -q 'parse_config.*\.devcontainer' "$shadow"
+```
+
+## Phase 2 — Adversarial probes (only when 01–18 all PASS)
 
 When the deterministic battery is clean, think of **10 novel breakout
-approaches and try them**. The goal is to find a gap the 16-check
+approaches and try them**. The goal is to find a gap the 18-check
 matrix doesn't directly exercise — anything that lets the sandbox
 escape its filesystem inversion, recover scrubbed env vars, reach
 the host's network identity, signal/observe processes outside the
@@ -338,17 +362,17 @@ should be followed by a "Suggested follow-up:" line proposing what
 a more targeted test would look like.
 
 If all 10 probes are **[BLOCKED]**, the sandbox passes both phases
-and the final line becomes `RESULT: SANDBOX OK (16 deterministic +
+and the final line becomes `RESULT: SANDBOX OK (18 deterministic +
 10 adversarial)`.
 
 ## Output format
 
-Print a header line `"/verify-sandbox: 16 checks"`, then one
+Print a header line `"/verify-sandbox: 18 checks"`, then one
 `[PASS]` / `[FAIL]` line per check (zero-padded number, name,
 one-line explanation on FAIL), then a `Summary:` line.
 
 ```
-/verify-sandbox: 17 checks
+/verify-sandbox: 18 checks
   [PASS] 01 IS_SANDBOX sentinel set
   [PASS] 02 NO_NEW_PRIVS: setuid escalation blocked
   [PASS] 03 strict-under-/root: only .claude (+.cache/.local) under $HOME
@@ -366,7 +390,8 @@ one-line explanation on FAIL), then a `Summary:` line.
   [PASS] 15 file mask: $HOME/.Xauthority is empty
   [PASS] 16 curated gitconfig: GIT_CONFIG_GLOBAL set, user.email present
   [PASS] 17 workspace scoped to $PWD (not broad /workspaces)
-  Summary: 17 PASS / 0 FAIL
+  [PASS] 18 config read from /etc/claude-sandbox.conf (no $PWD/.devcontainer read)
+  Summary: 18 PASS / 0 FAIL
 
 Adversarial probes:
   [BLOCKED] 01 read /proc/<host_pid>/environ — EACCES (YAMA ptrace_scope=1)
@@ -385,6 +410,6 @@ If any phase-2 probe is `[ESCAPED]`, exit non-zero regardless of
 phase-1 results.
 
 Final result line:
-- All 17 PASS + 10 BLOCKED → `RESULT: SANDBOX OK (17 deterministic + 10 adversarial)`
-- All 17 PASS + ≥1 INCONCLUSIVE + 0 ESCAPED → `RESULT: SANDBOX OK (17 deterministic + N BLOCKED, M INCONCLUSIVE)`
+- All 18 PASS + 10 BLOCKED → `RESULT: SANDBOX OK (18 deterministic + 10 adversarial)`
+- All 18 PASS + ≥1 INCONCLUSIVE + 0 ESCAPED → `RESULT: SANDBOX OK (18 deterministic + N BLOCKED, M INCONCLUSIVE)`
 - Any FAIL or ESCAPED → `RESULT: SANDBOX LEAKING — open an issue against gilesknap/claude-sandbox`

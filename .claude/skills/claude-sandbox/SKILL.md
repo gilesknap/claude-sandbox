@@ -257,6 +257,44 @@ no bind. It was Claude Code's startup write registering the browser
 extension. Fix: `--no-chrome` injection in the shadow, check 03
 stayed strict.
 
+## Invariant 4 — config is host-global at `/etc`, never read from the workspace
+
+`claude-shadow` reads its config from `/etc/claude-sandbox.conf`
+(`CONFIG_PATH`), placed by `install.sh`'s `install_conf` from the clone's
+`.devcontainer/claude-sandbox.conf` and re-stamped on every rebuild via
+postCreate. It is NOT read from `$PWD/.devcontainer/claude-sandbox.conf`
+anymore (that call site moved in PR for the global-conf change).
+
+Two reasons, one load-bearing for the threat model:
+
+- **Security (the real reason).** `$PWD` is the workspace, bound rw into
+  the sandbox. A per-workspace conf is attacker-writable from inside the
+  jail: a compromised session could write `allow-write = /` (or
+  `workspace-root = /`) and the next launch would `--bind` it rw, a
+  cross-session breakout. `/etc` is not in the rw bind set.
+- **Ergonomics.** One global conf means `allow-write = /cache` (uv) and
+  friends apply to `claude` in every workspace with nothing added to
+  individual repos. Edit the clone conf + re-run `./install` (a rebuild
+  does it via postCreate) to apply.
+
+`parse_config` still takes the path as `$1` (tests pass a fixture); only
+the launch-time call site is pinned to `CONFIG_PATH`. Env vars
+(`CLAUDE_SANDBOX_*`) still override per session. `just promote` still
+ships a starter conf into a promoted target's `.devcontainer/`, whose own
+`install.sh` reads it into `/etc` (keeps promoted hosts self-sufficient).
+
+**Refuse as regressions:**
+- Any change that reads the conf from `$PWD`, the workspace, or any
+  sandbox-rw path. The conf source must stay outside the jail's rw set.
+- "Make allow-write per-repo again so projects can opt in" reopens the
+  cross-session bind-escalation vector. Per-session env vars are the
+  supported override; the global conf is the only file.
+- verify-sandbox check 18 guards that the installed shadow reads `/etc`
+  and has no `$PWD/.devcontainer` read. `tests/bwrap_argv.sh` scenario 8b
+  guards that `$VIRTUAL_ENV/bin` is appended (not prepended) to PATH, and
+  the harness unsets the runner's `VIRTUAL_ENV`/`UV_*` so the suite is
+  deterministic inside an activated venv. Keep all three.
+
 ## Where things live
 
 | Concern                       | File                                                |

@@ -20,6 +20,11 @@ set -euo pipefail
 # relocates it here so that rc-mutation becomes inert.
 REAL_CLAUDE="/usr/libexec/claude-sandbox/claude"
 GITCONFIG_PATH="/etc/claude-gitconfig"
+# Host-global config, placed by install.sh from the clone's
+# .devcontainer/claude-sandbox.conf and re-stamped on every rebuild.
+# Read from /etc (not the workspace) so a compromised session can't edit
+# it to widen the next launch's binds — see parse_config below.
+CONFIG_PATH="/etc/claude-sandbox.conf"
 
 # Test hook: source-only mode lets tests pull `bwrap_argv_build` into
 # scope without running the launch body (nor the recursion guard, which
@@ -252,10 +257,14 @@ resolve_workspace_root() {
     fi
 }
 
-# parse_config: read .devcontainer/claude-sandbox.conf and apply
+# parse_config: read the host-global /etc/claude-sandbox.conf and apply
 # recognised keys. Format: "key = value" or bare "key" for boolean
 # flags; # comments and blank lines are ignored.
 # Env vars already set take precedence — the config supplies defaults.
+# The conf lives at /etc (placed by install.sh), NOT inside the rw-bound
+# workspace, so a compromised session cannot rewrite it to widen the
+# next launch's binds. Takes the path as $1 so tests can point it at a
+# fixture.
 parse_config() {
     local conf="$1"
     [ -f "$conf" ] || return 0
@@ -355,7 +364,7 @@ EOF
 EOF
 } > "$CLAUDE_SANDBOX_GITCONFIG_PATH"
 
-parse_config "$PWD/.devcontainer/claude-sandbox.conf"
+parse_config "$CONFIG_PATH"
 WORKSPACE_ROOT="$(resolve_workspace_root "$PWD")"
 mapfile -t ARGV < <(bwrap_argv_build "$WORKSPACE_ROOT" "$REAL_CLAUDE" "$@")
 

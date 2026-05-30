@@ -26,6 +26,17 @@ export CLAUDE_SHADOW_SOURCE_ONLY=1
 # shellcheck source=../.devcontainer/claude-sandbox/claude-shadow
 source "$SHADOW"
 
+# Normalise the runner's env so the pure-function assertions are
+# deterministic regardless of where the suite is run. The shadow passes
+# VIRTUAL_ENV / UV_* / PRE_COMMIT_HOME through and appends $VIRTUAL_ENV/bin
+# to PATH — running the suite from inside an activated venv (e.g. the
+# dogfood devcontainer) would otherwise leak that into Scenario 1's
+# canonical-PATH assertion. Scenarios that exercise these vars set them
+# explicitly in their own subshell, so clearing them here is safe.
+unset VIRTUAL_ENV UV_PROJECT_ENVIRONMENT UV_CACHE_DIR UV_PYTHON_CACHE_DIR \
+      PRE_COMMIT_HOME CLAUDE_SANDBOX_WORKSPACE_ROOT CLAUDE_SANDBOX_NO_FORGE \
+      CLAUDE_SANDBOX_ALLOW_WRITE
+
 PASSED=0
 FAILED=0
 
@@ -254,6 +265,18 @@ assert_eq scenario8-empty-override "/workspaces/foo" \
 
 assert_eq scenario8-empty-override-fallback "/tmp/bar" \
     "$(CLAUDE_SANDBOX_WORKSPACE_ROOT= resolve_workspace_root /tmp/bar)"
+
+# --- Scenario 8b: VIRTUAL_ENV/bin APPENDED to PATH (never prepended) ---
+# A venv binary must not be able to shadow `claude` or a system tool
+# (Invariant 1), and VIRTUAL_ENV itself is passed through into the
+# sandbox. Guards the deliberate uv/venv passthrough.
+mkdir -p "$TMPHOME/venv/bin"
+ARGV8B="$(HOME="$TMPHOME" VIRTUAL_ENV="$TMPHOME/venv" \
+    CLAUDE_SANDBOX_GITCONFIG_PATH=/etc/claude-gitconfig \
+    bwrap_argv_build "$TMPHOME" /test/.local/bin/claude)"
+assert_contains scenario8b-venv-appended "$ARGV8B" \
+    "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$TMPHOME/.local/bin:$TMPHOME/venv/bin"
+assert_pair scenario8b-venv-passthrough "$ARGV8B" '--setenv' 'VIRTUAL_ENV'
 
 # --- Scenario 9: CLAUDE_SANDBOX_NO_FORGE=1 omits forge token dirs ---
 # $TMPHOME/.config/gh and glab-cli were created in scenario 4b.

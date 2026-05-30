@@ -20,7 +20,7 @@ cd claude-sandbox
 
 Then run `claude` as usual — the shadow on `$PATH` wraps every
 invocation in `bwrap`. Run `/verify-sandbox` from inside a session
-to confirm the 17-check battery + 10 adversarial breakout probes
+to confirm the 18-check battery + 10 adversarial breakout probes
 pass.
 
 The installer is idempotent: re-run after a devcontainer rebuild and
@@ -81,7 +81,7 @@ TIOCSTI terminal injection. Out of scope are workspace contents
 /verify-sandbox        # inside Claude
 ```
 
-Runs the 17 PASS/FAIL battery + 10 adversarial breakout probes
+Runs the 18 PASS/FAIL battery + 10 adversarial breakout probes
 against the live process and exits non-zero on any FAIL. The spec
 lives at `.claude/commands/verify-sandbox.md`.
 
@@ -144,13 +144,16 @@ under `/workspaces/` are read-only. To restore the old broad bind:
 ```
 
 For extra writable paths without widening to all of `/workspaces`, add
-them one per line to `~/.config/claude-sandbox/allow-write.conf`
-(blank lines and `#` comments ignored; non-existent paths skipped):
+`allow-write` lines to the sandbox config. Edit it in the clone at
+`.devcontainer/claude-sandbox.conf`; `install.sh` copies it to the
+host-global `/etc/claude-sandbox.conf` the shadow reads at launch (a
+devcontainer rebuild re-stamps it via postCreate, or re-run `./install`).
+Blank lines and `#` comments are ignored; non-existent paths are skipped:
 
-```
-# allow-write.conf
-/workspaces/shared-notes
-/workspaces/sibling-project
+```ini
+# .devcontainer/claude-sandbox.conf  (installed to /etc/claude-sandbox.conf)
+allow-write = /cache
+allow-write = /workspaces/sibling-project
 ```
 
 ## Authenticating with forges
