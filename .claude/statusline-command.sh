@@ -21,18 +21,23 @@ degraded_line() {
 
 command -v jq >/dev/null 2>&1 || { degraded_line; exit 0; }
 
-# Single jq pass emits tab-separated fields so a malformed value can't
-# bleed across columns. `// empty` returns empty strings rather than
-# the literal "null"; cost defaults to 0 for the printf below.
-IFS=$'\t' read -r model cwd used remaining cost < <(
+# Single jq pass emits unit-separator (\x1f) delimited fields so a
+# malformed value can't bleed across columns. We can't use \t: `read`
+# treats tab as IFS-whitespace and collapses runs of it, so an empty
+# field (e.g. absent .effort.level) would silently shift every later
+# column. \x1f is non-whitespace, so empty fields are preserved.
+# `// ""` yields empty strings rather than the literal "null"; cost
+# defaults to 0 for the printf below.
+IFS=$'\x1f' read -r model effort cwd used remaining cost < <(
     printf '%s' "$input" | jq -r '
         [
             (.model.display_name // "unknown model"),
+            (.effort.level // ""),
             (.workspace.current_dir // .cwd // ""),
-            (.context_window.used_percentage // empty | tostring),
-            (.context_window.remaining_percentage // empty | tostring),
+            (.context_window.used_percentage // "" | tostring),
+            (.context_window.remaining_percentage // "" | tostring),
             (.cost.total_cost_usd // 0 | tostring)
-        ] | @tsv
+        ] | join("")
     ' 2>/dev/null
 ) || { degraded_line; exit 0; }
 
@@ -44,6 +49,12 @@ fi
 short_cwd="${cwd/#$HOME/~}"
 username=$(whoami 2>/dev/null || echo "unknown")
 cost_info=$(printf 'cost: $%.2f' "${cost:-0}")
+
+# Effort level is only present for models that support it; suffix it to
+# the model column (e.g. "Opus 4.8 · high") when available.
+if [ -n "$effort" ]; then
+    model="$model · $effort"
+fi
 
 if [ -n "$used" ] && [ -n "$remaining" ]; then
     # printf %.0f rounds half-away-from-zero, matching the old
