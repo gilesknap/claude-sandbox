@@ -20,8 +20,10 @@ gh-auth:
       - Resource owner: your user (or org that owns this repo)
       - Repository access: Only select repositories -> just this repo
       - Expiration: short (e.g. 30 days) so a leaked token expires quickly
-      - Repository permissions (Read and Write):
-          Contents, Issues, Pull requests
+      - Repository permissions Read/Write:
+          Issues, Pull requests
+      - Repository permissions Read Only:
+          Contents
         (Metadata: Read-only is added automatically)
       - Leave everything else unset / no access
 
