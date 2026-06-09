@@ -14,9 +14,12 @@ PASSED=0
 FAILED=0
 
 pass() { PASSED=$((PASSED+1)); }
-fail() {
-    FAILED=$((FAILED+1))
-    echo "FAIL: $1" >&2
+fail() { FAILED=$((FAILED+1)); echo "FAIL: $1" >&2; }
+assert_true()   { local name="$1"; shift; if "$@"; then pass; else fail "$name"; fi; }
+file_sum()      { sha256sum "$1" | awk '{print $1}'; }
+assert_stable() {
+    local label="$1" a="$2" b="$3"
+    if [ "$a" = "$b" ]; then pass; else fail "$label drifted across install re-run"; fi
 }
 
 PREFIX="$(mktemp -d)"
@@ -38,95 +41,39 @@ fi
 
 # Shadow placement.
 SHADOW_DEST="$PREFIX/usr/local/bin/claude"
-if [ -f "$SHADOW_DEST" ]; then
-    pass
-else
-    fail "shadow not placed at $SHADOW_DEST"
-fi
-
-if [ -x "$SHADOW_DEST" ]; then
-    pass
-else
-    fail "shadow not executable"
-fi
-
+assert_true "shadow not placed at $SHADOW_DEST" test -f "$SHADOW_DEST"
+assert_true "shadow not executable"             test -x "$SHADOW_DEST"
 # install(1) -m 0755 — check mode.
-if [ "$(stat -c '%a' "$SHADOW_DEST" 2>/dev/null)" = "755" ]; then
-    pass
-else
-    fail "shadow mode is $(stat -c '%a' "$SHADOW_DEST" 2>/dev/null), expected 755"
-fi
-
+shadow_mode="$(stat -c '%a' "$SHADOW_DEST" 2>/dev/null)"
+assert_true "shadow mode is $shadow_mode, expected 755" test "$shadow_mode" = "755"
 # Shebang.
-if head -1 "$SHADOW_DEST" | grep -qxF '#!/usr/bin/env bash'; then
-    pass
-else
-    fail "shadow does not start with #!/usr/bin/env bash"
-fi
+assert_true "shadow does not start with #!/usr/bin/env bash" \
+    bash -c "head -1 '$SHADOW_DEST' | grep -qxF '#!/usr/bin/env bash'"
 
 # Workspace hook placement.
 HOOK_DEST="$WORKSPACE/.claude/hooks/sandbox-check.sh"
-if [ -f "$HOOK_DEST" ]; then
-    pass
-else
-    fail "workspace hook not placed at $HOOK_DEST"
-fi
-if [ -x "$HOOK_DEST" ]; then
-    pass
-else
-    fail "workspace hook not executable"
-fi
+assert_true "workspace hook not placed at $HOOK_DEST" test -f "$HOOK_DEST"
+assert_true "workspace hook not executable"            test -x "$HOOK_DEST"
 
 # Workspace statusline placement.
 SL_DEST="$WORKSPACE/.claude/statusline-command.sh"
-if [ -f "$SL_DEST" ]; then
-    pass
-else
-    fail "workspace statusline not placed at $SL_DEST"
-fi
-if [ -x "$SL_DEST" ]; then
-    pass
-else
-    fail "workspace statusline not executable"
-fi
-if [ "$(stat -c '%a' "$SL_DEST" 2>/dev/null)" = "755" ]; then
-    pass
-else
-    fail "statusline mode is $(stat -c '%a' "$SL_DEST" 2>/dev/null), expected 755"
-fi
+assert_true "workspace statusline not placed at $SL_DEST" test -f "$SL_DEST"
+assert_true "workspace statusline not executable"          test -x "$SL_DEST"
+sl_mode="$(stat -c '%a' "$SL_DEST" 2>/dev/null)"
+assert_true "statusline mode is $sl_mode, expected 755"    test "$sl_mode" = "755"
 
 # Settings.json placement + content.
 SETTINGS="$WORKSPACE/.claude/settings.json"
-if [ -f "$SETTINGS" ]; then
-    pass
-else
-    fail "settings.json not placed at $SETTINGS"
-fi
-
-if jq -e . "$SETTINGS" >/dev/null 2>&1; then
-    pass
-else
-    fail "settings.json does not parse as JSON"
-fi
-
-if jq -r '.hooks.UserPromptSubmit[0].hooks[0].command' "$SETTINGS" \
-        2>/dev/null | grep -qx '.claude/hooks/sandbox-check.sh'; then
-    pass
-else
-    fail "settings.json missing UserPromptSubmit sandbox-check.sh entry"
-fi
-
-if jq -r '.statusLine.command' "$SETTINGS" 2>/dev/null \
-        | grep -qx '.claude/statusline-command.sh'; then
-    pass
-else
-    fail "settings.json missing .statusLine.command entry"
-fi
-if [ "$(jq -r '.statusLine.type' "$SETTINGS" 2>/dev/null)" = "command" ]; then
-    pass
-else
-    fail "settings.json .statusLine.type is not 'command'"
-fi
+assert_true "settings.json not placed at $SETTINGS" test -f "$SETTINGS"
+assert_true "settings.json does not parse as JSON"  jq -e . "$SETTINGS" >/dev/null 2>&1
+assert_true "settings.json missing UserPromptSubmit sandbox-check.sh entry" bash -c "
+    jq -r '.hooks.UserPromptSubmit[0].hooks[0].command' '$SETTINGS' 2>/dev/null \
+        | grep -qx '.claude/hooks/sandbox-check.sh'"
+assert_true "settings.json missing .statusLine.command entry" bash -c "
+    jq -r '.statusLine.command' '$SETTINGS' 2>/dev/null \
+        | grep -qx '.claude/statusline-command.sh'"
+assert_true "settings.json .statusLine.type is not 'command'" bash -c "
+    [ \"\$(jq -r '.statusLine.type' '$SETTINGS' 2>/dev/null)\" = 'command' ]"
 
 # Config placement: install copies the clone's conf to the host-global
 # /etc/claude-sandbox.conf the shadow reads at launch (prefixed for the
@@ -134,59 +81,23 @@ fi
 # the clone actually carries a conf — which it does in-tree.
 CONF_DEST="$PREFIX/etc/claude-sandbox.conf"
 CONF_SRC="$REPO_ROOT/.devcontainer/claude-sandbox.conf"
-if [ -f "$CONF_DEST" ]; then
-    pass
-else
-    fail "config not placed at $CONF_DEST"
-fi
-if cmp -s "$CONF_SRC" "$CONF_DEST"; then
-    pass
-else
-    fail "installed config differs from source conf"
-fi
+assert_true "config not placed at $CONF_DEST"     test -f "$CONF_DEST"
+assert_true "installed config differs from source" cmp -s "$CONF_SRC" "$CONF_DEST"
 
 # Idempotency: second install must be byte-for-byte stable.
-SHADOW_SUM_A="$(sha256sum "$SHADOW_DEST" | awk '{print $1}')"
-HOOK_SUM_A="$(sha256sum "$HOOK_DEST" | awk '{print $1}')"
-SL_SUM_A="$(sha256sum "$SL_DEST" | awk '{print $1}')"
-SETTINGS_SUM_A="$(sha256sum "$SETTINGS" | awk '{print $1}')"
-CONF_SUM_A="$(sha256sum "$CONF_DEST" | awk '{print $1}')"
+SHADOW_SUM_A="$(file_sum "$SHADOW_DEST")"
+HOOK_SUM_A="$(file_sum "$HOOK_DEST")"
+SL_SUM_A="$(file_sum "$SL_DEST")"
+SETTINGS_SUM_A="$(file_sum "$SETTINGS")"
+CONF_SUM_A="$(file_sum "$CONF_DEST")"
 
-if ! run_install; then
-    fail "second install run exited non-zero"
-fi
+assert_true "second install run exited non-zero" run_install
 
-SHADOW_SUM_B="$(sha256sum "$SHADOW_DEST" | awk '{print $1}')"
-HOOK_SUM_B="$(sha256sum "$HOOK_DEST" | awk '{print $1}')"
-SL_SUM_B="$(sha256sum "$SL_DEST" | awk '{print $1}')"
-SETTINGS_SUM_B="$(sha256sum "$SETTINGS" | awk '{print $1}')"
-CONF_SUM_B="$(sha256sum "$CONF_DEST" | awk '{print $1}')"
-
-if [ "$SHADOW_SUM_A" = "$SHADOW_SUM_B" ]; then
-    pass
-else
-    fail "shadow drifted across install re-run"
-fi
-if [ "$HOOK_SUM_A" = "$HOOK_SUM_B" ]; then
-    pass
-else
-    fail "workspace hook drifted across install re-run"
-fi
-if [ "$SL_SUM_A" = "$SL_SUM_B" ]; then
-    pass
-else
-    fail "statusline drifted across install re-run"
-fi
-if [ "$SETTINGS_SUM_A" = "$SETTINGS_SUM_B" ]; then
-    pass
-else
-    fail "settings.json drifted across install re-run"
-fi
-if [ "$CONF_SUM_A" = "$CONF_SUM_B" ]; then
-    pass
-else
-    fail "config drifted across install re-run"
-fi
+assert_stable "shadow"        "$SHADOW_SUM_A"   "$(file_sum "$SHADOW_DEST")"
+assert_stable "workspace hook" "$HOOK_SUM_A"    "$(file_sum "$HOOK_DEST")"
+assert_stable "statusline"    "$SL_SUM_A"       "$(file_sum "$SL_DEST")"
+assert_stable "settings.json" "$SETTINGS_SUM_A" "$(file_sum "$SETTINGS")"
+assert_stable "config"        "$CONF_SUM_A"     "$(file_sum "$CONF_DEST")"
 
 # Settings merge with pre-existing JSON: write a settings.json with
 # unrelated keys, re-run, assert merge preserves them and dedups our hook.

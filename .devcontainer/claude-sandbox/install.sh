@@ -157,6 +157,17 @@ link_terminal_config() {
     [ -e "$HOME/.claude.json" ] || [ -L "$HOME/.claude.json" ] || ln -s "$shared/.claude.json" "$HOME/.claude.json"
 }
 
+# atomic_write_settings: write $2 (JSON string) to $1 atomically.
+# mktemp+mv ensures readers see a complete file.
+atomic_write_settings() {
+    local settings="$1" content="$2"
+    local tmp
+    tmp="$(mktemp "$settings.XXXXXX")"
+    printf '%s\n' "$content" > "$tmp"
+    chmod 0644 "$tmp"
+    mv "$tmp" "$settings"
+}
+
 # wire_settings_hook: surgical UserPromptSubmit-hook merge into
 # <workspace>/.claude/settings.json.
 #   - file absent → write minimal {"hooks":{"UserPromptSubmit":[...]}}.
@@ -178,8 +189,7 @@ wire_settings_hook() {
     }')"
 
     if [ ! -f "$settings" ]; then
-        printf '%s\n' "$minimal" > "$settings"
-        chmod 0644 "$settings"
+        atomic_write_settings "$settings" "$minimal"
         return 0
     fi
 
@@ -209,7 +219,7 @@ EOF
         exit 1
     fi
 
-    local merged tmp
+    local merged
     merged="$(jq --arg cmd "$hook_cmd" '
         .hooks //= {}
         | .hooks.UserPromptSubmit //= []
@@ -219,10 +229,7 @@ EOF
             ]
           end
     ' "$settings")"
-    tmp="$(mktemp "$settings.XXXXXX")"
-    printf '%s\n' "$merged" > "$tmp"
-    chmod 0644 "$tmp"
-    mv "$tmp" "$settings"
+    atomic_write_settings "$settings" "$merged"
 }
 
 # wire_settings_statusline: stamp our .statusLine into settings.json
@@ -238,14 +245,11 @@ wire_settings_statusline() {
         return 0
     fi
 
-    local merged tmp
+    local merged
     merged="$(jq --arg cmd "$sl_cmd" '
         .statusLine = {type: "command", command: $cmd}
     ' "$settings")"
-    tmp="$(mktemp "$settings.XXXXXX")"
-    printf '%s\n' "$merged" > "$tmp"
-    chmod 0644 "$tmp"
-    mv "$tmp" "$settings"
+    atomic_write_settings "$settings" "$merged"
 }
 
 main() {

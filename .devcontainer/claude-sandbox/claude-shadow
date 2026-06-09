@@ -257,6 +257,14 @@ resolve_workspace_root() {
     fi
 }
 
+# trim_ws: strip leading and trailing whitespace from the named variable.
+# Usage: trim_ws varname  (modifies in place via bash nameref, no subshell)
+trim_ws() {
+    local -n _tw="$1"
+    _tw="${_tw#"${_tw%%[![:space:]]*}"}"
+    _tw="${_tw%"${_tw##*[![:space:]]}"}"
+}
+
 # parse_config: read the host-global /etc/claude-sandbox.conf and apply
 # recognised keys. Format: "key = value" or bare "key" for boolean
 # flags; # comments and blank lines are ignored.
@@ -270,16 +278,11 @@ parse_config() {
     [ -f "$conf" ] || return 0
     local line key value
     while IFS= read -r line || [ -n "$line" ]; do
-        line="${line%%#*}"
-        line="${line#"${line%%[![:space:]]*}"}"
-        line="${line%"${line##*[![:space:]]}"}"
+        line="${line%%#*}"; trim_ws line
         [ -z "$line" ] && continue
         if [[ "$line" == *=* ]]; then
-            key="${line%%=*}"
-            key="${key%"${key##*[![:space:]]}"}"
-            value="${line#*=}"
-            value="${value#"${value%%[![:space:]]*}"}"
-            value="${value%"${value##*[![:space:]]}"}"
+            key="${line%%=*}";  trim_ws key
+            value="${line#*=}"; trim_ws value
         else
             key="$line"
             value=""

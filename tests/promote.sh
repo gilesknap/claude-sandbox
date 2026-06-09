@@ -20,10 +20,8 @@ PROMOTE="$REPO_ROOT/.devcontainer/claude-sandbox/promote.sh"
 PASSED=0
 FAILED=0
 pass() { PASSED=$((PASSED+1)); }
-fail() {
-    FAILED=$((FAILED+1))
-    echo "FAIL: $1" >&2
-}
+fail() { FAILED=$((FAILED+1)); echo "FAIL: $1" >&2; }
+file_sum() { sha256sum "$1" | awk '{print $1}'; }
 
 run_promote() {
     bash "$PROMOTE" "$@" >/dev/null 2>&1
@@ -163,12 +161,12 @@ cat > "$DC_TARGET/.devcontainer/devcontainer.json" <<'JSONC'
   "postCreateCommand": "echo hi"
 }
 JSONC
-DC_SUM_A="$(sha256sum "$DC_TARGET/.devcontainer/devcontainer.json" | awk '{print $1}')"
+DC_SUM_A="$(file_sum "$DC_TARGET/.devcontainer/devcontainer.json")"
 
 if ! run_promote "$DC_TARGET"; then
     fail "promote on JSONC-with-existing-cmd target exited non-zero"
 fi
-DC_SUM_B="$(sha256sum "$DC_TARGET/.devcontainer/devcontainer.json" | awk '{print $1}')"
+DC_SUM_B="$(file_sum "$DC_TARGET/.devcontainer/devcontainer.json")"
 if [ "$DC_SUM_A" = "$DC_SUM_B" ]; then
     pass
 else
@@ -246,10 +244,10 @@ fi
 
 # Simulate user edit.
 echo "allow-write = /workspaces/peer" >> "$CONF"
-CONF_SUM_A="$(sha256sum "$CONF" | awk '{print $1}')"
+CONF_SUM_A="$(file_sum "$CONF")"
 
 run_promote "$CONF_TARGET" || fail "promote re-run with customised conf exited non-zero"
-CONF_SUM_B="$(sha256sum "$CONF" | awk '{print $1}')"
+CONF_SUM_B="$(file_sum "$CONF")"
 if [ "$CONF_SUM_A" = "$CONF_SUM_B" ]; then
     pass
 else
