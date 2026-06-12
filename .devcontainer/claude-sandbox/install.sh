@@ -164,20 +164,113 @@ install_conf() {
     install -m 0644 "$src" "$dst"
 }
 
+# _is_mount PATH — true if PATH is itself a mount target. Compares the
+# st_dev of PATH against its parent (the heuristic mountpoint(1) uses),
+# NOT /proc/mounts: inside the sandbox /proc is the host's procfs
+# (--ro-bind /proc /proc), so /proc/mounts shows the host namespace and
+# would miss a path the sandbox itself bind-mounted. stat(2) queries the
+# live kernel, and unlike mountpoint(1) the st_dev check works for a
+# bind-mounted ~/.claude.json (a regular file) too.
+_is_mount() {
+    local path="$1" pdev ddev
+    [ -e "$path" ] || return 1
+    pdev="$(stat -c '%d' "$path" 2>/dev/null)" || return 1
+    ddev="$(stat -c '%d' "$(dirname "$path")" 2>/dev/null)" || return 1
+    [ "$pdev" != "$ddev" ]
+}
+
+# _is_empty PATH KIND — true when an existing dir has no entries / a file
+# is zero-length. Caller guarantees PATH exists.
+_is_empty() {
+    local path="$1" kind="$2"
+    if [ "$kind" = dir ]; then
+        [ -z "$(ls -A "$path" 2>/dev/null)" ]
+    else
+        [ ! -s "$path" ]
+    fi
+}
+
+# _ensure_shared SHARED KIND — create an empty shared dir/file when
+# absent, so a symlink into it never dangles.
+_ensure_shared() {
+    local shared="$1" kind="$2"
+    if [ -e "$shared" ]; then return 0; fi
+    if [ "$kind" = dir ]; then
+        mkdir -p "$shared"
+    else
+        mkdir -p "$(dirname "$shared")"
+        : > "$shared"
+    fi
+}
+
+# _share_path TARGET SHARED KIND — make TARGET ($HOME/.claude{,.json}) a
+# symlink into the shared config store, picking the data-preserving
+# action for whatever TARGET currently is. The old create-if-absent
+# guard silently lost the share whenever TARGET already existed — and in
+# a not-yet-promoted devcontainer (install not in postCreate) an
+# unsandboxed `claude` or the VS Code extension routinely writes a local
+# ~/.claude before install ever runs, permanently shadowing the share.
+# Cases:
+#   symlink -> SHARED         : nothing to do (idempotent re-run).
+#   symlink elsewhere         : repoint to SHARED.
+#   active mountpoint         : leave alone — a devcontainer that binds
+#                               ~/.claude in directly is already shared,
+#                               and a busy mount can't be moved (EBUSY).
+#   real, SHARED empty/absent : SEED — move TARGET into SHARED, then
+#                               symlink. Preserves a first-run OAuth
+#                               token / local history as the new baseline.
+#   real, SHARED populated    : shared wins — back TARGET up timestamped,
+#                               then symlink (the "adopt" case).
+#   absent                    : ensure SHARED exists, then symlink.
+_share_path() {
+    local target="$1" shared="$2" kind="$3"
+
+    if [ -L "$target" ]; then
+        if [ "$(readlink "$target")" = "$shared" ]; then
+            return 0
+        fi
+        _ensure_shared "$shared" "$kind"
+        rm -f "$target"
+        ln -s "$shared" "$target"
+        return 0
+    fi
+
+    if _is_mount "$target"; then
+        echo "claude-sandbox: $target is an active mountpoint; leaving as-is (assumed already shared)." >&2
+        return 0
+    fi
+
+    if [ -e "$target" ]; then
+        if [ ! -e "$shared" ] || _is_empty "$shared" "$kind"; then
+            if [ -e "$shared" ]; then rm -rf "$shared"; fi
+            mkdir -p "$(dirname "$shared")"
+            mv "$target" "$shared"
+            echo "claude-sandbox: seeded shared config $shared from $target." >&2
+        else
+            local backup="$target.pre-sandbox.$(date +%Y%m%d-%H%M%S)"
+            mv "$target" "$backup"
+            echo "claude-sandbox: $shared already populated; backed up $target -> $backup." >&2
+        fi
+        ln -s "$shared" "$target"
+        return 0
+    fi
+
+    _ensure_shared "$shared" "$kind"
+    ln -s "$shared" "$target"
+}
+
 # link_terminal_config: when /user-terminal-config is mounted (the
-# convention used by terminal-config-style devcontainers), symlink
+# convention used by terminal-config-style devcontainers), share
 # ~/.claude and ~/.claude.json into it so Claude's settings and OAuth
-# state are shared across every devcontainer on the host. Runs before
-# install_claude_binary so the destinations are guaranteed-clean; a
-# pre-existing destination (this repo's bind mount, or a previous
-# install) makes ln a no-op via the -e/-L guards.
+# state follow the user across every devcontainer on the host. Runs
+# before install_claude_binary. Delegates per-path policy to
+# _share_path, which adopts (or seeds from) a pre-existing local config
+# instead of silently leaving it un-shared.
 link_terminal_config() {
     local shared="${CLAUDE_SHARED_CONFIG:-/user-terminal-config}"
     [ -d "$shared" ] || return 0
-    mkdir -p "$shared/.claude"
-    [ -e "$shared/.claude.json" ] || : > "$shared/.claude.json"
-    [ -e "$HOME/.claude" ]      || [ -L "$HOME/.claude" ]      || ln -s "$shared/.claude"      "$HOME/.claude"
-    [ -e "$HOME/.claude.json" ] || [ -L "$HOME/.claude.json" ] || ln -s "$shared/.claude.json" "$HOME/.claude.json"
+    _share_path "$HOME/.claude"      "$shared/.claude"      dir
+    _share_path "$HOME/.claude.json" "$shared/.claude.json" file
 }
 
 # The GLOBAL integrity guard is delivered through Claude Code's MANAGED

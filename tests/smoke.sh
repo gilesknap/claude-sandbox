@@ -293,7 +293,7 @@ fi
 # stays pinned at the global tmpdir so the guard merge never touches HOME.
 LINK_HOME="$(mktemp -d)"
 LINK_SHARED="$(mktemp -d)"
-trap 'rm -rf "$PREFIX" "$WORKSPACE" "$USER_HOME_DIR" "$MGD_PREFIX" "$MIG_HOME" "$LINK_HOME" "$LINK_SHARED"' EXIT
+trap 'rm -rf "$PREFIX" "$WORKSPACE" "$USER_HOME_DIR" "$MGD_PREFIX" "$MIG_HOME" "$LINK_HOME" "$LINK_SHARED" "$ADOPT_HOME" "$ADOPT_SHARED" "$SEED_HOME" "$SEED_SHARED"' EXIT
 HOME="$LINK_HOME" CLAUDE_SHARED_CONFIG="$LINK_SHARED" \
     INSTALL_WORKSPACE="$WORKSPACE" \
     bash "$REPO_ROOT/.devcontainer/claude-sandbox/install.sh" >/dev/null 2>&1
@@ -326,6 +326,48 @@ if [ "$VERIFY_RC" -eq 0 ] && printf '%s' "$VERIFY_OUT" | grep -q 'OUTSIDE the bw
     pass
 else
     fail "verifier did not emit a non-blocking warning when unwrapped (rc=$VERIFY_RC)"
+fi
+
+# link_terminal_config ADOPT: a pre-existing *local* ~/.claude{,.json}
+# (e.g. written by an unsandboxed claude / VS Code extension before
+# install ran) must not shadow an already-populated shared store. The
+# shared copy wins; the local one is backed up, not destroyed.
+ADOPT_HOME="$(mktemp -d)"
+ADOPT_SHARED="$(mktemp -d)"
+SEED_HOME="$(mktemp -d)"
+SEED_SHARED="$(mktemp -d)"
+mkdir -p "$ADOPT_HOME/.claude" "$ADOPT_SHARED/.claude"
+echo local  > "$ADOPT_HOME/.claude/marker";   printf 'local'  > "$ADOPT_HOME/.claude.json"
+echo shared > "$ADOPT_SHARED/.claude/marker"; printf 'shared' > "$ADOPT_SHARED/.claude.json"
+HOME="$ADOPT_HOME" CLAUDE_SHARED_CONFIG="$ADOPT_SHARED" \
+    INSTALL_WORKSPACE="$WORKSPACE" \
+    bash "$REPO_ROOT/.devcontainer/claude-sandbox/install.sh" >/dev/null 2>&1
+if [ "$(readlink "$ADOPT_HOME/.claude" 2>/dev/null)" = "$ADOPT_SHARED/.claude" ] \
+        && [ "$(readlink "$ADOPT_HOME/.claude.json" 2>/dev/null)" = "$ADOPT_SHARED/.claude.json" ] \
+        && [ "$(cat "$ADOPT_HOME/.claude/marker" 2>/dev/null)" = shared ] \
+        && cat "$ADOPT_HOME"/.claude.pre-sandbox.*/marker 2>/dev/null | grep -qx local \
+        && cat "$ADOPT_HOME"/.claude.json.pre-sandbox.* 2>/dev/null | grep -qx local; then
+    pass
+else
+    fail "adopt: populated shared must win and local ~/.claude{,.json} be backed up"
+fi
+
+# link_terminal_config SEED: when the shared store is empty/absent, a
+# real local ~/.claude{,.json} (carrying the first-run OAuth token) must
+# be MOVED into the shared store as the baseline — never discarded.
+mkdir -p "$SEED_HOME/.claude"
+echo seedme > "$SEED_HOME/.claude/marker"
+printf 'token-abc' > "$SEED_HOME/.claude.json"
+HOME="$SEED_HOME" CLAUDE_SHARED_CONFIG="$SEED_SHARED" \
+    INSTALL_WORKSPACE="$WORKSPACE" \
+    bash "$REPO_ROOT/.devcontainer/claude-sandbox/install.sh" >/dev/null 2>&1
+if [ "$(readlink "$SEED_HOME/.claude" 2>/dev/null)" = "$SEED_SHARED/.claude" ] \
+        && [ "$(readlink "$SEED_HOME/.claude.json" 2>/dev/null)" = "$SEED_SHARED/.claude.json" ] \
+        && [ "$(cat "$SEED_SHARED/.claude/marker" 2>/dev/null)" = seedme ] \
+        && [ "$(cat "$SEED_SHARED/.claude.json" 2>/dev/null)" = token-abc ]; then
+    pass
+else
+    fail "seed: empty shared must be seeded from local config without data loss"
 fi
 
 # Bwrap sanity check (when bwrap is available AND we are not already
