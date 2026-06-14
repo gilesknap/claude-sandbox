@@ -55,7 +55,16 @@ those edits in `.claude/`, not in a copied target.
 ## Build the docs locally
 
 The docs toolchain is the project's one isolated Python dependency, pinned in
-`docs/requirements.txt`. Build the Sphinx site in a throwaway virtualenv:
+`docs/requirements.txt`. The quickest way to preview is the `docs` recipe, which
+provisions an isolated `.venv-docs` on first run and serves the site with live
+reload:
+
+```bash
+just docs          # http://localhost:8000, rebuilds on save
+just docs 9000     # choose a different port
+```
+
+Or build it once by hand into a throwaway virtualenv:
 
 ```bash
 python -m venv venv
@@ -64,4 +73,5 @@ pip install -r docs/requirements.txt
 sphinx-build -b html docs build/html
 ```
 
-Open `build/html/index.html` to preview.
+Open `build/html/index.html` to preview. CI builds with `-W` (warnings are
+errors), so resolve any warning the local build prints.

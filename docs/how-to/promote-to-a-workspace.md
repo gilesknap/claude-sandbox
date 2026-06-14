@@ -5,6 +5,9 @@ host: a teammate who clones the target only needs the devcontainer to come
 up, and the installer runs from `postCreate.sh` with the curated `.claude/`
 already in tree.
 
+```{include} ../_snippets/clone-note.md
+```
+
 ```bash
 just promote                       # promote into $PWD
 just promote /workspaces/fastcs    # promote into the named target

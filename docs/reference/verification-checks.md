@@ -6,6 +6,9 @@ pass — **10 adversarial breakout probes**. Any FAIL in phase 1, or any
 `[ESCAPED]` probe in phase 2, exits the command non-zero, so it is
 usable as a CI assertion.
 
+```{include} ../_snippets/clone-note.md
+```
+
 The exact bash for each check lives in the spec at
 `.claude/commands/verify-sandbox.md` in the repo. The summaries below
 state what each check asserts; see

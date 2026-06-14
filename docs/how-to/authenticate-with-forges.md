@@ -3,6 +3,9 @@
 Give the sandboxed Claude a `gh` / `glab` token so `git push` works,
 without leaking the token into your shell history.
 
+```{include} ../_snippets/clone-note.md
+```
+
 ## Authenticate
 
 ```bash

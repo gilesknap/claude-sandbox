@@ -11,10 +11,38 @@
     height: auto;
 }
 
-/* Give tables a little more breathing room. */
-table.docutils td,
-table.docutils th {
+/* Tables: the reference pages carry long multi-line prose in the last
+   ("Why" / "Purpose") column. pydata-sphinx-theme 0.18 renders tables as
+   `.table` inside a horizontally-scrollable container, which clips that prose
+   off the right edge. Force the table to the content width and wrap long cell
+   text (breaking long paths / URLs) so every column stays readable. */
+.bd-content table.table,
+.bd-content table.docutils {
+    width: 100%;
+    table-layout: auto;
+}
+.bd-content table.table td,
+.bd-content table.table th,
+.bd-content table.docutils td,
+.bd-content table.docutils th {
+    white-space: normal;
+    overflow-wrap: break-word;
+    vertical-align: top;
     padding: 0.4rem 0.75rem;
+}
+/* Scope aggressive breaking to inline code only. The theme sets code to
+   `overflow-wrap: break-word`, which does NOT shrink intrinsic min-width, so a
+   long path/URL keeps its column (and the whole table) wide and triggers the
+   horizontal scrollbar. `anywhere` IS counted in min-content sizing, so the
+   table can shrink to fit — no scroll. Keeping this off the cell itself means
+   short plain values like `rw` stay intact instead of collapsing to one char
+   per line. */
+.bd-content table.table code,
+.bd-content table.table .pre,
+.bd-content table.docutils code,
+.bd-content table.docutils .pre {
+    overflow-wrap: anywhere;
+    word-break: break-word;
 }
 
 /* Subtle accent on the left of inline literals and admonition titles. */

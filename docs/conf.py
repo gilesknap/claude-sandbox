@@ -15,7 +15,7 @@ extensions = [
 ]
 
 master_doc = "index"
-exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
+exclude_patterns = ["_build", "Thumbs.db", ".DS_Store", "_snippets/*"]
 
 # Don't fail the build on missing cross-references.
 nitpicky = False
@@ -58,4 +58,5 @@ copybutton_prompt_text = r">>> |\.\.\. |\$ |# "
 copybutton_prompt_is_regexp = True
 
 # -- sphinxcontrib-mermaid ---------------------------------------------------
-mermaid_version = "11.4.1"
+# 11.6+ fixes the subgraph-title / nested-box overlap seen in 11.4.x.
+mermaid_version = "11.15.0"
