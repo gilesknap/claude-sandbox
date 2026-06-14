@@ -1,6 +1,6 @@
 (adr-integrity-surfaces)=
 
-# 13. Keep the integrity-check surfaces separate and self-contained
+# 14. Keep the integrity-check surfaces separate and self-contained
 
 Date: 2026-06-14
 

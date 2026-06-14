@@ -1,6 +1,6 @@
 (adr-managed-settings-guard)=
 
-# 12. Deliver the integrity guard globally via managed-settings
+# 13. Deliver the integrity guard globally via managed-settings
 
 Date: 2026-06-14
 

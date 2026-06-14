@@ -1,6 +1,6 @@
 (adr-untrusted-workspace)=
 
-# 11. Treat the read-write workspace as untrusted: default to $PWD, source config from /etc
+# 12. Treat the read-write workspace as untrusted: default to $PWD, source config from /etc
 
 Date: 2026-05-29
 

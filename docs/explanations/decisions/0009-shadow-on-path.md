@@ -1,6 +1,6 @@
 (adr-shadow-on-path)=
 
-# 8. Relocate the real Claude binary off PATH so the shadow always wins
+# 9. Relocate the real Claude binary off PATH so the shadow always wins
 
 Date: 2026-05-12
 

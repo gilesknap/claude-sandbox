@@ -1,6 +1,6 @@
 (adr-xdg-split)=
 
-# 10. Split the home re-binds by XDG category
+# 11. Split the home re-binds by XDG category
 
 Date: 2026-05-14
 

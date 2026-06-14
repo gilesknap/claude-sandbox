@@ -1,6 +1,6 @@
 (adr-promote-by-value)=
 
-# 9. `just promote` copies by value and never edits devcontainer.json
+# 10. `just promote` copies by value and never edits devcontainer.json
 
 Date: 2026-05-12
 

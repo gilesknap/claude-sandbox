@@ -1,6 +1,6 @@
 (adr-bash-only)=
 
-# 7. Bash-only: no Python package, uv, or pytest
+# 8. Bash-only: no Python package, uv, or pytest
 
 Date: 2026-05-12
 
