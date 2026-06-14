@@ -86,29 +86,7 @@ Rules:
 - Don't anticipate future tests
 - Keep tests focused on observable behavior
 
-### 4. Commit Per Slice
-
-**Land each slice as its own commit, the moment it goes GREEN.** A slice is the smallest self-contained, shippable unit — usually one RED→GREEN cycle, sometimes a tight cluster of cycles that together form a single coherent capability (e.g., a pure utility plus its handful of example tests).
-
-Why per-slice commits matter:
-
-- **Reviewability**: small commits read like a story. A reviewer can follow the build-up cycle by cycle instead of unpicking a single mega-diff.
-- **Bisectability**: each commit is green, so `git bisect` can pinpoint regressions to a slice.
-- **Reversibility**: a bad slice is one `git revert` away — no manual untangling.
-- **Forced honesty**: if a slice can't stand on its own as a commit, that's a signal it isn't really a vertical slice yet.
-
-When you outline the plan in step 1, the slices in that plan are the commits. Confirm the slice list with the user up front; don't accumulate multiple slices in the working tree before committing.
-
-Rules:
-
-- Commit immediately after a slice goes GREEN. Don't defer commits to "the end."
-- Each commit's diff should match exactly one item in the plan. If a single file's hunks belong to two different slices, untangle them — temporarily revert one part, commit, then re-apply.
-- The commit message names the slice and the user-visible behaviour it adds, not the cycle number.
-- Existing tests stay green at every commit; new tests added in this slice go in the same commit as the impl that makes them pass.
-
-If you find yourself five slices deep with no commits, stop and split before continuing — a single `git reset --soft` plus per-slice `git add` is faster than letting the divergence grow.
-
-### 5. Refactor
+### 4. Refactor
 
 After all tests pass, look for [refactor candidates](refactoring.md):
 
@@ -118,7 +96,7 @@ After all tests pass, look for [refactor candidates](refactoring.md):
 - [ ] Consider what new code reveals about existing code
 - [ ] Run tests after each refactor step
 
-**Never refactor while RED.** Get to GREEN first. Commit refactors separately from the slices that motivated them.
+**Never refactor while RED.** Get to GREEN first.
 
 ## Checklist Per Cycle
 
@@ -128,5 +106,4 @@ After all tests pass, look for [refactor candidates](refactoring.md):
 [ ] Test would survive internal refactor
 [ ] Code is minimal for this test
 [ ] No speculative features added
-[ ] Slice committed as soon as it went GREEN
 ```

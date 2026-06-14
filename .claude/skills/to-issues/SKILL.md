@@ -1,6 +1,6 @@
 ---
-description: Break a plan/PRD into independently-grabbable issues using tracer-bullet vertical slices.
-argument-hint: "[issue ref or path, optional]"
+name: to-issues
+description: Break a plan, spec, or PRD into independently-grabbable issues on the project issue tracker using tracer-bullet vertical slices. Use when user wants to convert a plan into issues, create implementation tickets, or break down work into issues.
 ---
 
 # To Issues
@@ -51,24 +51,9 @@ Iterate until the user approves the breakdown.
 
 ### 5. Publish the issues to the issue tracker
 
-For each approved slice, publish a new issue to the issue tracker. Use the issue body template below. Apply the `needs-triage` triage label so each issue enters the normal triage flow.
+For each approved slice, publish a new issue to the issue tracker. Use the issue body template below. These issues are considered ready for AFK agents, so publish them with the correct triage label unless instructed otherwise.
 
 Publish issues in dependency order (blockers first) so you can reference real issue identifiers in the "Blocked by" field.
-
-### 6. Tell the user how to consume them
-
-Each slice is meant to be picked up in **its own context**. Do not implement multiple slices in a single Claude session — context bloat undermines reviewability, blurs the per-slice commit discipline, and means a single mistake mid-stream contaminates everything that follows.
-
-After publishing, tell the user explicitly:
-
-> Each slice should be implemented in its own context. Either:
->
-> - Run `/clear` between slices and pick them up one at a time in fresh sessions, OR
-> - Spawn one subagent per non-blocked slice and let them work in parallel (each subagent gets its own context).
->
-> Don't pick up the next slice in the same session you finished the last one in.
-
-If the agent that ran `/to-issues` is the same agent that would naturally pick up slice #1: stop after publishing. Hand back to the user. Let them start a fresh session.
 
 <issue-template>
 ## Parent
@@ -78,6 +63,8 @@ A reference to the parent issue on the issue tracker (if the source was an exist
 ## What to build
 
 A concise description of this vertical slice. Describe the end-to-end behavior, not layer-by-layer implementation.
+
+Avoid specific file paths or code snippets — they go stale fast. Exception: if a prototype produced a snippet that encodes a decision more precisely than prose can (state machine, reducer, schema, type shape), inline it here and note briefly that it came from a prototype. Trim to the decision-rich parts — not a working demo, just the important bits.
 
 ## Acceptance criteria
 
