@@ -1,0 +1,24 @@
+/* claude-sandbox docs — small tasteful overrides */
+
+/* Center mermaid diagrams and keep them within the content width. */
+.mermaid {
+    display: flex;
+    justify-content: center;
+    margin: 1.5rem auto;
+}
+.mermaid svg {
+    max-width: 100%;
+    height: auto;
+}
+
+/* Give tables a little more breathing room. */
+table.docutils td,
+table.docutils th {
+    padding: 0.4rem 0.75rem;
+}
+
+/* Subtle accent on the left of inline literals and admonition titles. */
+.bd-content a {
+    text-decoration-thickness: 1px;
+    text-underline-offset: 2px;
+}
