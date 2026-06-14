@@ -283,9 +283,21 @@ your devcontainer's `remoteEnv`. This check fails when the broad
 # $PWD is a proper subdir of it. If /workspaces is an rw bind-mount and
 # CLAUDE_SANDBOX_WORKSPACE_ROOT is not /workspaces, the old default
 # regressed (it is passed through as --setenv into the sandbox).
+#
+# Hardened parse: a mountinfo line is
+#   36 35 98:0 /mnt1 /mnt2 rw,noatime - ext4 /dev/sda1 rw,errors=...
+#                         ^field 6 = per-mount opts   ^after "-" = superblock opts
+# The superblock options (which routinely end in "rw" even for a read-only
+# bind) must NEVER be read here. We isolate field 6 of the LAST matching
+# /workspaces line (topmost mount wins), split it on commas, and require an
+# EXACT "rw" token. Token equality (not a substring/`\brw\b` regex on the
+# whole line) means superblock "rw" can never produce a false positive,
+# even if the field selection later regresses to printing $0.
 if [ -d /workspaces ] && [ "$PWD" != /workspaces ]; then
-    if awk '$5=="/workspaces"{print $6; exit}' /proc/self/mountinfo \
-            | grep -q '\brw\b'; then
+    if awk '$5=="/workspaces"{opts=$6}
+            END{if(opts==""){exit 1}
+                n=split(opts,o,","); for(i=1;i<=n;i++) if(o[i]=="rw") exit 0
+                exit 1}' /proc/self/mountinfo; then
         [ "${CLAUDE_SANDBOX_WORKSPACE_ROOT:-}" = "/workspaces" ] || exit 1
     fi
 fi
