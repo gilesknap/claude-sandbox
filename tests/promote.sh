@@ -132,21 +132,23 @@ else
     fail "promote did not print the paste-this snippet for devcontainer.json"
 fi
 
-# Self-sufficiency: the PROMOTED target's own install.sh must wire the
-# GLOBAL guard from the shipped scripts (no second clone of
-# claude-sandbox needed). Run it under SMOKE with a tmpdir user-home.
+# Self-sufficiency: the PROMOTED target's own install.sh must place the
+# guard scripts under /usr/libexec and wire the managed-settings guard
+# from the shipped scripts (no second clone of claude-sandbox needed).
+# Run it under SMOKE with tmpdir prefix + user-home.
+PROMOTED_PREFIX="$(mktemp -d)"
 PROMOTED_HOME="$(mktemp -d)"
-trap 'rm -rf "$TARGET" "$PROMOTED_HOME"' EXIT
-CLAUDE_SANDBOX_SMOKE=1 INSTALL_USER_HOME="$PROMOTED_HOME" INSTALL_PREFIX="$(mktemp -d)" \
+trap 'rm -rf "$TARGET" "$PROMOTED_PREFIX" "$PROMOTED_HOME"' EXIT
+CLAUDE_SANDBOX_SMOKE=1 INSTALL_USER_HOME="$PROMOTED_HOME" INSTALL_PREFIX="$PROMOTED_PREFIX" \
     bash "$TARGET/.devcontainer/claude-sandbox/install.sh" >/dev/null 2>&1
-if [ -x "$PROMOTED_HOME/.claude/claude-sandbox/sandbox-verify.sh" ] \
-        && [ -x "$PROMOTED_HOME/.claude/claude-sandbox/sandbox-gate.sh" ] \
+if [ -x "$PROMOTED_PREFIX/usr/libexec/claude-sandbox/sandbox-verify.sh" ] \
+        && [ -x "$PROMOTED_PREFIX/usr/libexec/claude-sandbox/sandbox-gate.sh" ] \
         && jq -e 'any(.hooks.UserPromptSubmit[].hooks[]?; (.command // "")|endswith("sandbox-gate.sh"))
                   and (.env.DISABLE_AUTOUPDATER == "1")' \
-            "$PROMOTED_HOME/.claude/settings.json" >/dev/null 2>&1; then
+            "$PROMOTED_PREFIX/etc/claude-code/managed-settings.json" >/dev/null 2>&1; then
     pass
 else
-    fail "promoted target's install.sh did not wire the global guard from shipped scripts"
+    fail "promoted target's install.sh did not wire the managed guard from shipped scripts"
 fi
 
 # Idempotency: re-run must be byte-stable across the whole target.

@@ -127,7 +127,7 @@ anchors that survive the edit. Print the snippet; trust them.
 gaps in the "re-promote = full sync" mental model:
 
 - The user-scope statusline (`install_file_if_absent` +
-  `.statusLine` set only-if-absent in `wire_user_settings`) is
+  `.statusLine` set only-if-absent in `wire_user_statusline`) is
   *create-if-absent*. An existing one (ours or the owner's) is left
   alone. This lives in `install.sh`, not promote — but the same
   respect-the-owner policy applies.
@@ -299,56 +299,71 @@ ships a starter conf into a promoted target's `.devcontainer/`, whose own
   the harness unsets the runner's `VIRTUAL_ENV`/`UV_*` so the suite is
   deterministic inside an activated venv. Keep all three.
 
-## Invariant 5 — the integrity guard is GLOBAL (user-scope) + the in-container auto-updater stays OFF
+## Invariant 5 — the integrity guard is GLOBAL via MANAGED settings (`/etc` + `/usr/libexec`), and the in-container auto-updater stays OFF
 
-The guard that asserts "we are actually inside the shadow" lives in
-**user-scope `~/.claude/settings.json`**, not a per-repo project
-`.claude/`. Two hooks, installed at absolute paths under
-`~/.claude/claude-sandbox/` by `install_user_guard` +
-`wire_user_settings`:
+The guard that asserts "we are actually inside the shadow" is delivered
+through Claude Code's **managed-settings** layer — the highest-precedence
+settings tier, which a user **cannot override or remove** by editing
+their own `~/.claude/settings.json`. Two hooks, wired by
+`install_guard_scripts` + `wire_managed_settings`:
 
-- `SessionStart` → `sandbox-verify.sh`: full integrity battery, warns
-  loudly when unwrapped. **Cannot block** (SessionStart only injects
-  messages/context — exit 2 does *not* abort a session).
-- `UserPromptSubmit` → `sandbox-gate.sh`: lean fail-closed gate, `exit
-  2` (blocks the prompt) unless `IS_SANDBOX=1`. Escape hatch:
-  `CLAUDE_SANDBOX_ALLOW_UNWRAPPED=1`. Both skip on `CLAUDE_CODE_REMOTE=true`.
+- `SessionStart` → `/usr/libexec/claude-sandbox/sandbox-verify.sh`: full
+  integrity battery, warns loudly when unwrapped. **Cannot block**
+  (SessionStart only injects messages/context — exit 2 does *not* abort).
+- `UserPromptSubmit` → `/usr/libexec/claude-sandbox/sandbox-gate.sh`:
+  lean fail-closed gate, `exit 2` (blocks the prompt) unless
+  `IS_SANDBOX=1`. Escape hatch: `CLAUDE_SANDBOX_ALLOW_UNWRAPPED=1`. Both
+  skip on `CLAUDE_CODE_REMOTE=true`.
 
-**Why user-scope, not per-repo** (the bug this fixes): the old
-`UserPromptSubmit` hook lived in each repo's project `.claude/`, so
-running `claude` in any folder without one had *no guard*. Worse, the
-trigger is silent: Claude Code's auto-updater re-creates
-`~/.local/bin/claude` on a version bump; depending on `PATH` order that
-launches the real binary **unwrapped** (no bwrap, no git steering) and
-self-entrenches. User-scope hooks are read by the real binary in every
-cwd — even unwrapped — so the guard fires everywhere. Across-scope hooks
-are **additive/union** (verified): a repo with its own `SessionStart`
-hook does not shadow ours; both run.
+**Why managed-settings + `/usr/libexec`, not user-scope `~/.claude`**
+(this is the tamper-resistance that makes the native devcontainer
+safe-by-construction):
+- Hook **entries** in `/etc/claude-code/managed-settings.json` are
+  highest-precedence and un-removable from user-scope. Editing
+  `~/.claude/settings.json` (the shared cross-container file) cannot
+  disable the guard — only `root` editing `/etc` or a deliberate
+  `./install` can. This closes the "user edits shared settings and drops
+  the hooks" reopening of the silent-disable hole.
+- Hook **scripts** in `/usr/libexec/claude-sandbox/` are root-owned,
+  off-PATH, and **ro inside the sandbox** (`--ro-bind / /`) — exactly
+  like the relocated real binary. Under `~/.claude` they'd be rw-bound
+  and a compromised session could rewrite `sandbox-gate.sh` to `exit 0`.
+- Same `/etc`-not-the-rw-workspace discipline as Invariant 4.
+
+This also superseded an earlier per-repo design (project `.claude/`
+hooks) — that left folders with no project `.claude/` unguarded — and an
+intermediate user-scope-`~/.claude` design (removable by editing the
+shared file). Cross-scope hooks are **additive/union** (verified), and
+managed hooks fire *in addition to* user/project hooks; we deliberately
+do **not** set `allowManagedHooksOnly` (that would block the owner's own
+hooks). The user-scope `~/.claude/settings.json` now holds only the
+statusline preference, and `wire_user_statusline` **prunes** any guard
+hooks an earlier install left there (single authoritative home).
 
 **Why the auto-updater is hard-disabled** (`env.DISABLE_AUTOUPDATER=1`
-+ `autoUpdates:false`): that's root-cause removal of the bypass re-arm.
-Updates become a deliberate `./install`, which re-relocates the current
-binary and re-asserts the shadow. `autoUpdatesChannel:"stable"` only
-*slows* updates — it would NOT fix this.
-
-**Foot-gun — absolute paths.** User-scope hook `command`s must be
-absolute (`bash $HOME/.claude/claude-sandbox/…`); a relative path only
-resolves when cwd == project root, which a global guard can't assume.
++ `autoUpdates:false`, in managed settings): root-cause removal of the
+bypass re-arm. Updates become a deliberate `./install`, which
+re-relocates the current binary and re-asserts the shadow.
+`autoUpdatesChannel:"stable"` only *slows* updates — it would NOT fix
+this.
 
 **Refuse as regressions:**
-- Moving the guard back into a per-repo project `.claude/` (or having
-  `promote.sh` seed it per-repo). It must stay global.
-- Relative `command` paths in the user-scope settings.
+- Moving the guard back into per-repo project `.claude/` or into
+  user-scope `~/.claude` (removable). It must stay in managed settings.
+- Putting the guard scripts under `~/.claude` or anywhere in the sandbox
+  rw set — they must stay in `/usr/libexec` (off-PATH, ro in sandbox).
+- Setting `allowManagedHooksOnly` (would silence the owner's own hooks).
 - Re-enabling the in-container auto-updater, or relying on
   `autoUpdatesChannel` instead of `DISABLE_AUTOUPDATER`.
-- A hard-fail (vs warn-and-skip) on a non-JSON `~/.claude/settings.json`
-  during the merge — bricking the rest of install over a global file we
-  don't own is worse than skipping the guard merge with a loud warning.
-- `tests/smoke.sh` asserts merge idempotency, foreign-key preservation,
-  dedup, the updater keys, set-only-if-absent statusline, and the
-  wrapped/unwrapped/escape-hatch behaviour of both scripts via the
-  `INSTALL_USER_HOME` tmpdir seam (so the suite never touches the real
-  `~/.claude`). Keep that seam — never let a test write the real home.
+- A hard-fail (vs warn-and-skip) on a non-JSON managed/user settings
+  file — bricking install over a file we don't exclusively own is worse
+  than skipping the merge with a loud warning.
+- `tests/smoke.sh` asserts managed-merge idempotency, admin-policy
+  preservation, dedup, updater keys, no-`allowManagedHooksOnly`, the
+  user-scope prune migration, set-only-if-absent statusline, and the
+  wrapped/unwrapped/escape-hatch behaviour of both scripts — all via the
+  `INSTALL_PREFIX`/`INSTALL_USER_HOME` tmpdir seams (the suite never
+  touches the real `/etc` or `~/.claude`). Keep those seams.
 
 ## Where things live
 

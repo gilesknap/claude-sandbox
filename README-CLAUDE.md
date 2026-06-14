@@ -261,21 +261,27 @@ it as a CI assertion), and the FAIL line names which defence
 regressed. The full spec lives at
 `.claude/commands/verify-sandbox.md`.
 
-A **global integrity guard** in user-scope `~/.claude/settings.json`
-runs in every folder (even ones with no project `.claude/`):
+A **global integrity guard**, delivered through Claude Code's
+highest-precedence **managed-settings** layer
+(`/etc/claude-code/managed-settings.json`), runs in every folder (even
+ones with no project `.claude/`) and **cannot be removed by editing
+`~/.claude/settings.json`**:
 
-- `SessionStart` → `~/.claude/claude-sandbox/sandbox-verify.sh` runs
+- `SessionStart` → `/usr/libexec/claude-sandbox/sandbox-verify.sh` runs
   the full integrity subset once per session and warns loudly (it
   cannot block — SessionStart hooks only inject messages/context) when
   Claude is running outside the shadow.
-- `UserPromptSubmit` → `~/.claude/claude-sandbox/sandbox-gate.sh` is a
-  sub-second fail-closed gate: it blocks every prompt unless
+- `UserPromptSubmit` → `/usr/libexec/claude-sandbox/sandbox-gate.sh` is
+  a sub-second fail-closed gate: it blocks every prompt unless
   `IS_SANDBOX=1`. Set `CLAUDE_SANDBOX_ALLOW_UNWRAPPED=1` to downgrade to
   warn-only. Both skip on Claude Code Web (`CLAUDE_CODE_REMOTE=true`).
 
-See [Keeping the shadow on PATH](./README.md#keeping-the-shadow-on-path)
-for why this lives in user-scope and why the installer disables the
-auto-updater.
+The hook entries (in `/etc`) and the scripts (in `/usr/libexec`) both
+sit outside the sandbox's rw set and outside the user-editable
+`~/.claude`, so neither a compromised in-session Claude nor an
+accidental settings edit can disable them. See [Keeping the shadow on
+PATH](./README.md#keeping-the-shadow-on-path) for why this lives in the
+managed layer and why the installer disables the auto-updater.
 
 ## What's installed
 
@@ -287,22 +293,23 @@ typically wired into `postCreate.sh`:
 | `/usr/libexec/claude-sandbox/claude` | Anthropic installer (`curl -fsSL https://claude.ai/install.sh \| bash`), relocated | The real Claude binary, kept off the user's PATH so the shadow always wins |
 | `/usr/local/bin/claude` | `.devcontainer/claude-sandbox/claude-shadow` (verbatim) | Shadow that wraps the real binary in `bwrap`. Falls through to the real binary when `IS_SANDBOX=1` so internal `claude` invocations from a hook don't recurse |
 | `/etc/claude-gitconfig` | Generated | Curated gitconfig — regenerated from `git config --get user.{name,email}` on every shadow launch |
-
-User-scope `~/.claude` (the GLOBAL integrity guard — fires in every
-folder, idempotent, never clobbers your own settings):
-
-| Path | Behaviour |
-|---|---|
-| `~/.claude/claude-sandbox/sandbox-verify.sh` | `SessionStart` hook — full integrity battery + loud warn when unwrapped |
-| `~/.claude/claude-sandbox/sandbox-gate.sh` | `UserPromptSubmit` hook — sub-second fail-closed gate (`IS_SANDBOX=1` or block) |
-| `~/.claude/statusline-command.sh` | Statusline — seeded **only if absent** (an owner-customised one survives) |
-| `~/.claude/settings.json` | jq-merged idempotently: adds the two hooks (deduped by basename), sets `env.DISABLE_AUTOUPDATER=1` + `autoUpdates:false`, sets `.statusLine` only if absent. Every other key — yours — is preserved verbatim. A non-JSON (JSONC) file is warned about and skipped, not parsed |
+| `/usr/libexec/claude-sandbox/sandbox-verify.sh` | `SessionStart` guard script — full integrity battery + loud warn when unwrapped. Off-PATH, root-owned, ro inside the sandbox |
+| `/usr/libexec/claude-sandbox/sandbox-gate.sh` | `UserPromptSubmit` guard script — sub-second fail-closed gate (`IS_SANDBOX=1` or block). Same protections |
+| `/etc/claude-code/managed-settings.json` | The GLOBAL guard policy. jq-merged idempotently: adds the two hooks (deduped by basename), sets `env.DISABLE_AUTOUPDATER=1` + `autoUpdates:false`. Highest-precedence + user-uneditable, so removing the hooks from `~/.claude/settings.json` does **not** disable the guard. Any real admin policy already in the file is preserved; `allowManagedHooksOnly` is deliberately **not** set (your own hooks still run) |
 
 Disabling the auto-updater is **root-cause removal**: Claude Code's
 updater otherwise re-creates `~/.local/bin/claude` on a version bump,
 which can launch the real binary unwrapped and self-entrench. With the
 updater off, updates happen only via a deliberate `./install`, which
 re-relocates the current binary and re-asserts the shadow.
+
+User-scope `~/.claude` (preference only — the guard does **not** live
+here):
+
+| Path | Behaviour |
+|---|---|
+| `~/.claude/statusline-command.sh` | Statusline — seeded **only if absent** (an owner-customised one survives) |
+| `~/.claude/settings.json` | `.statusLine` set only if absent; otherwise untouched. If an earlier install put the guard here, those hook entries are pruned so the guard has a single authoritative home (`/etc`). All other keys — yours — preserved |
 
 Not placed: `CLAUDE.md` and `README-CLAUDE.md` live in the meta-repo
 for dogfooding.
