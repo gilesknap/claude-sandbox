@@ -1,6 +1,6 @@
 ---
 name: claude-sandbox
-description: Architecture decisions and historical reversals for this repo's bwrap-based Claude sandbox. Covers real claude off PATH, container-scoped PATs, Ubuntu-24.04 CI bwrap workarounds, dogfood ≈ guest, the `just promote` three-layer model (no JSONC editing), and two walked-back paths (Python orchestration; embedding in python-copier-template). Surface before edits to `.devcontainer/claude-sandbox/{claude-shadow,install.sh,promote.sh}`, `install`, `tests/`, `.github/workflows/ci.yml`, or `.claude/commands/verify-sandbox.md`; or before any suggestion to re-introduce Python tooling, embed in python-copier-template, persist gh/glab PATs across containers, or auto-edit JSONC devcontainer.json.
+description: Architecture decisions and historical reversals for this repo's bwrap-based Claude sandbox. Covers real claude off PATH, container-scoped PATs, the GLOBAL integrity guard in user-scope ~/.claude (SessionStart verify + UserPromptSubmit gate) plus auto-updater disable, Ubuntu-24.04 CI bwrap workarounds, dogfood ≈ guest, the `just promote` three-layer model (no JSONC editing), and two walked-back paths (Python orchestration; embedding in python-copier-template). Surface before edits to `.devcontainer/claude-sandbox/{claude-shadow,install.sh,promote.sh,sandbox-verify.sh,sandbox-gate.sh}`, `install`, `tests/`, `.github/workflows/ci.yml`, or `.claude/commands/verify-sandbox.md`; or before any suggestion to re-introduce Python tooling, embed in python-copier-template, persist gh/glab PATs across containers, auto-edit JSONC devcontainer.json, move the integrity guard back to per-repo project `.claude/`, or re-enable the in-container auto-updater.
 ---
 
 # claude-sandbox
@@ -99,9 +99,10 @@ into `install.sh`.
 `just promote <target>` (PR #20, issue #18) makes a target workspace
 a self-sufficient claude-sandbox host:
 
-1. **Curated `.claude/`** — commands, skills, hooks, statusline,
-   plus `wire_settings_{hook,statusline}` against the target's
-   `settings.json`.
+1. **Curated `.claude/`** — commands + skills only. The integrity guard
+   is global (see Invariant 5), wired into user-scope `~/.claude` by
+   `install.sh`; promote no longer seeds a per-repo hook, statusline, or
+   project `settings.json`.
 2. **Install machinery** — `.devcontainer/claude-sandbox/{install.sh,
    claude-shadow, promote.sh}` + root `justfile`. The justfile is
    shipped verbatim, so its recipes must all be promote-target-safe;
@@ -125,8 +126,11 @@ anchors that survive the edit. Print the snippet; trust them.
 **Two intentional don't-update edges in re-promote** — the only
 gaps in the "re-promote = full sync" mental model:
 
-- `wire_settings_statusline` is *create-if-absent*. An existing
-  `.statusLine` (ours or the user's) is left alone.
+- The user-scope statusline (`install_file_if_absent` +
+  `.statusLine` set only-if-absent in `wire_user_statusline`) is
+  *create-if-absent*. An existing one (ours or the owner's) is left
+  alone. This lives in `install.sh`, not promote — but the same
+  respect-the-owner policy applies.
 - `wire_postcreate_script` only checks whether `bash install` is on
   any line of `postCreate.sh`. The file body is never rewritten if
   the file exists.
@@ -136,8 +140,8 @@ overwrite-on-diff.
 
 **Source-guard pattern**: `install.sh` ends with
 `[ "${BASH_SOURCE[0]}" = "$0" ] && main "$@"` so `promote.sh` can
-`source install.sh` to reuse `install_file` + `wire_settings_*`
-without re-running `main`. Don't remove the guard.
+`source install.sh` to reuse `install_file` (and friends) without
+re-running `main`. Don't remove the guard.
 
 ## Considered alternative — postCreate references shared clone (declined)
 
@@ -295,6 +299,72 @@ ships a starter conf into a promoted target's `.devcontainer/`, whose own
   the harness unsets the runner's `VIRTUAL_ENV`/`UV_*` so the suite is
   deterministic inside an activated venv. Keep all three.
 
+## Invariant 5 — the integrity guard is GLOBAL via MANAGED settings (`/etc` + `/usr/libexec`), and the in-container auto-updater stays OFF
+
+The guard that asserts "we are actually inside the shadow" is delivered
+through Claude Code's **managed-settings** layer — the highest-precedence
+settings tier, which a user **cannot override or remove** by editing
+their own `~/.claude/settings.json`. Two hooks, wired by
+`install_guard_scripts` + `wire_managed_settings`:
+
+- `SessionStart` → `/usr/libexec/claude-sandbox/sandbox-verify.sh`: full
+  integrity battery, warns loudly when unwrapped. **Cannot block**
+  (SessionStart only injects messages/context — exit 2 does *not* abort).
+- `UserPromptSubmit` → `/usr/libexec/claude-sandbox/sandbox-gate.sh`:
+  lean fail-closed gate, `exit 2` (blocks the prompt) unless
+  `IS_SANDBOX=1`. Escape hatch: `CLAUDE_SANDBOX_ALLOW_UNWRAPPED=1`. Both
+  skip on `CLAUDE_CODE_REMOTE=true`.
+
+**Why managed-settings + `/usr/libexec`, not user-scope `~/.claude`**
+(this is the tamper-resistance that makes the native devcontainer
+safe-by-construction):
+- Hook **entries** in `/etc/claude-code/managed-settings.json` are
+  highest-precedence and un-removable from user-scope. Editing
+  `~/.claude/settings.json` (the shared cross-container file) cannot
+  disable the guard — only `root` editing `/etc` or a deliberate
+  `./install` can. This closes the "user edits shared settings and drops
+  the hooks" reopening of the silent-disable hole.
+- Hook **scripts** in `/usr/libexec/claude-sandbox/` are root-owned,
+  off-PATH, and **ro inside the sandbox** (`--ro-bind / /`) — exactly
+  like the relocated real binary. Under `~/.claude` they'd be rw-bound
+  and a compromised session could rewrite `sandbox-gate.sh` to `exit 0`.
+- Same `/etc`-not-the-rw-workspace discipline as Invariant 4.
+
+This also superseded an earlier per-repo design (project `.claude/`
+hooks) — that left folders with no project `.claude/` unguarded — and an
+intermediate user-scope-`~/.claude` design (removable by editing the
+shared file). Cross-scope hooks are **additive/union** (verified), and
+managed hooks fire *in addition to* user/project hooks; we deliberately
+do **not** set `allowManagedHooksOnly` (that would block the owner's own
+hooks). The user-scope `~/.claude/settings.json` now holds only the
+statusline preference, and `wire_user_statusline` **prunes** any guard
+hooks an earlier install left there (single authoritative home).
+
+**Why the auto-updater is hard-disabled** (`env.DISABLE_AUTOUPDATER=1`
++ `autoUpdates:false`, in managed settings): root-cause removal of the
+bypass re-arm. Updates become a deliberate `./install`, which
+re-relocates the current binary and re-asserts the shadow.
+`autoUpdatesChannel:"stable"` only *slows* updates — it would NOT fix
+this.
+
+**Refuse as regressions:**
+- Moving the guard back into per-repo project `.claude/` or into
+  user-scope `~/.claude` (removable). It must stay in managed settings.
+- Putting the guard scripts under `~/.claude` or anywhere in the sandbox
+  rw set — they must stay in `/usr/libexec` (off-PATH, ro in sandbox).
+- Setting `allowManagedHooksOnly` (would silence the owner's own hooks).
+- Re-enabling the in-container auto-updater, or relying on
+  `autoUpdatesChannel` instead of `DISABLE_AUTOUPDATER`.
+- A hard-fail (vs warn-and-skip) on a non-JSON managed/user settings
+  file — bricking install over a file we don't exclusively own is worse
+  than skipping the merge with a loud warning.
+- `tests/smoke.sh` asserts managed-merge idempotency, admin-policy
+  preservation, dedup, updater keys, no-`allowManagedHooksOnly`, the
+  user-scope prune migration, set-only-if-absent statusline, and the
+  wrapped/unwrapped/escape-hatch behaviour of both scripts — all via the
+  `INSTALL_PREFIX`/`INSTALL_USER_HOME` tmpdir seams (the suite never
+  touches the real `/etc` or `~/.claude`). Keep those seams.
+
 ## Where things live
 
 | Concern                       | File                                                |
@@ -308,7 +378,8 @@ ships a starter conf into a promoted target's `.devcontainer/`, whose own
 | Promote smoke test            | `tests/promote.sh`                                  |
 | CI workflow                   | `.github/workflows/ci.yml`                          |
 | Live verification spec        | `.claude/commands/verify-sandbox.md`                |
-| Pre-prompt gate hook          | `.claude/hooks/sandbox-check.sh`                    |
+| Global SessionStart verifier  | `.devcontainer/claude-sandbox/sandbox-verify.sh`    |
+| Global UserPromptSubmit gate  | `.devcontainer/claude-sandbox/sandbox-gate.sh`      |
 | Threat model + binds rationale| `README-CLAUDE.md`                                  |
 | Recipes (promote, gh-auth, …) | `justfile` (shipped verbatim by `just promote`)     |
 

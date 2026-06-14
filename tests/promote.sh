@@ -53,9 +53,6 @@ expect_file ".claude/commands/verify-sandbox.md"
 expect_file ".claude/commands/memo.md"
 expect_file ".claude/skills/claude-sandbox/SKILL.md"
 expect_file ".claude/skills/diagnose/SKILL.md"
-expect_file ".claude/hooks/sandbox-check.sh"
-expect_file ".claude/statusline-command.sh"
-expect_file ".claude/settings.json"
 
 # Byte-equal source check on a skill .md.
 if cmp -s "$REPO_ROOT/.claude/skills/claude-sandbox/SKILL.md" \
@@ -65,19 +62,16 @@ else
     fail "promoted claude-sandbox/SKILL.md differs from source"
 fi
 
-# Settings merge.
-SETTINGS="$TARGET/.claude/settings.json"
-if jq -e 'any(.hooks.UserPromptSubmit[].hooks[]; .command == ".claude/hooks/sandbox-check.sh")' \
-        "$SETTINGS" >/dev/null 2>&1; then
+# The integrity guard is GLOBAL now (wired into ~/.claude by install.sh,
+# which the target's postCreate runs) — promote must NOT seed a per-repo
+# hook, statusline, or project settings.json into the target.
+if [ ! -e "$TARGET/.claude/hooks/sandbox-check.sh" ] \
+        && [ ! -e "$TARGET/.claude/hooks" ] \
+        && [ ! -e "$TARGET/.claude/settings.json" ] \
+        && [ ! -e "$TARGET/.claude/statusline-command.sh" ]; then
     pass
 else
-    fail "promoted settings.json missing sandbox-check.sh hook"
-fi
-if jq -e '.statusLine.command == ".claude/statusline-command.sh"' \
-        "$SETTINGS" >/dev/null 2>&1; then
-    pass
-else
-    fail "promoted settings.json missing .statusLine"
+    fail "promote seeded a per-repo guard/statusline/settings.json (should be global-only)"
 fi
 
 # Install machinery: byte-equal copies of install.sh, claude-shadow,
@@ -91,9 +85,13 @@ expect_byte_equal() {
         fail "$dst differs from source $src"
     fi
 }
-expect_byte_equal "$REPO_ROOT/.devcontainer/claude-sandbox/install.sh"    "$TARGET/.devcontainer/claude-sandbox/install.sh"
-expect_byte_equal "$REPO_ROOT/.devcontainer/claude-sandbox/claude-shadow" "$TARGET/.devcontainer/claude-sandbox/claude-shadow"
-expect_byte_equal "$REPO_ROOT/.devcontainer/claude-sandbox/promote.sh"    "$TARGET/.devcontainer/claude-sandbox/promote.sh"
+expect_byte_equal "$REPO_ROOT/.devcontainer/claude-sandbox/install.sh"        "$TARGET/.devcontainer/claude-sandbox/install.sh"
+expect_byte_equal "$REPO_ROOT/.devcontainer/claude-sandbox/claude-shadow"     "$TARGET/.devcontainer/claude-sandbox/claude-shadow"
+expect_byte_equal "$REPO_ROOT/.devcontainer/claude-sandbox/promote.sh"        "$TARGET/.devcontainer/claude-sandbox/promote.sh"
+# Global guard scripts must ship so the target's postCreate install.sh
+# (which places them under ~/.claude) can find them.
+expect_byte_equal "$REPO_ROOT/.devcontainer/claude-sandbox/sandbox-verify.sh" "$TARGET/.devcontainer/claude-sandbox/sandbox-verify.sh"
+expect_byte_equal "$REPO_ROOT/.devcontainer/claude-sandbox/sandbox-gate.sh"   "$TARGET/.devcontainer/claude-sandbox/sandbox-gate.sh"
 expect_byte_equal "$REPO_ROOT/justfile"                                   "$TARGET/justfile"
 # Config file — should land in target on first promote.
 expect_file ".devcontainer/claude-sandbox.conf"
@@ -132,6 +130,25 @@ if printf '%s' "$SNIPPET_OUT" | grep -q '"postCreateCommand": ".devcontainer/pos
     pass
 else
     fail "promote did not print the paste-this snippet for devcontainer.json"
+fi
+
+# Self-sufficiency: the PROMOTED target's own install.sh must place the
+# guard scripts under /usr/libexec and wire the managed-settings guard
+# from the shipped scripts (no second clone of claude-sandbox needed).
+# Run it under SMOKE with tmpdir prefix + user-home.
+PROMOTED_PREFIX="$(mktemp -d)"
+PROMOTED_HOME="$(mktemp -d)"
+trap 'rm -rf "$TARGET" "$PROMOTED_PREFIX" "$PROMOTED_HOME"' EXIT
+CLAUDE_SANDBOX_SMOKE=1 INSTALL_USER_HOME="$PROMOTED_HOME" INSTALL_PREFIX="$PROMOTED_PREFIX" \
+    bash "$TARGET/.devcontainer/claude-sandbox/install.sh" >/dev/null 2>&1
+if [ -x "$PROMOTED_PREFIX/usr/libexec/claude-sandbox/sandbox-verify.sh" ] \
+        && [ -x "$PROMOTED_PREFIX/usr/libexec/claude-sandbox/sandbox-gate.sh" ] \
+        && jq -e 'any(.hooks.UserPromptSubmit[].hooks[]?; (.command // "")|endswith("sandbox-gate.sh"))
+                  and (.env.DISABLE_AUTOUPDATER == "1")' \
+            "$PROMOTED_PREFIX/etc/claude-code/managed-settings.json" >/dev/null 2>&1; then
+    pass
+else
+    fail "promoted target's install.sh did not wire the managed guard from shipped scripts"
 fi
 
 # Idempotency: re-run must be byte-stable across the whole target.
