@@ -5,7 +5,13 @@
 # Claude local-only settings (per-user, not committed)
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
+
+# git worktrees — never commit a worktree checkout. These live inside the repo
+# (rather than a sibling dir) because the sandbox makes only $PWD writable.
 .claude/worktrees/
+.docs-wt/
+.worktrees/
+*.worktree/
 
 # vscode workspaces
 *.code-workspace
