@@ -1,5 +1,6 @@
 ---
-description: Create a new agent skill with proper structure and progressive disclosure.
+name: write-a-skill
+description: Create new agent skills with proper structure, progressive disclosure, and bundled resources. Use when user wants to create, write, or build a new skill.
 ---
 
 # Writing Skills

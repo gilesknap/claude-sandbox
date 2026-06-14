@@ -1,6 +1,6 @@
 ---
 name: claude-sandbox
-description: Architecture decisions and historical reversals for this repo's bwrap-based Claude sandbox. Covers real claude off PATH, container-scoped PATs, the GLOBAL integrity guard in user-scope ~/.claude (SessionStart verify + UserPromptSubmit gate) plus auto-updater disable, Ubuntu-24.04 CI bwrap workarounds, dogfood ≈ guest, the `just promote` three-layer model (no JSONC editing), and two walked-back paths (Python orchestration; embedding in python-copier-template). Surface before edits to `.devcontainer/claude-sandbox/{claude-shadow,install.sh,promote.sh,sandbox-verify.sh,sandbox-gate.sh}`, `install`, `tests/`, `.github/workflows/ci.yml`, or `.claude/commands/verify-sandbox.md`; or before any suggestion to re-introduce Python tooling, embed in python-copier-template, persist gh/glab PATs across containers, auto-edit JSONC devcontainer.json, move the integrity guard back to per-repo project `.claude/`, or re-enable the in-container auto-updater.
+description: Architecture decisions and historical reversals for this repo's bwrap-based Claude sandbox. Covers real claude off PATH, container-scoped PATs, the GLOBAL integrity guard delivered via managed-settings (/etc + /usr/libexec, NOT user-scope ~/.claude): SessionStart verify + UserPromptSubmit gate, plus auto-updater disable, Ubuntu-24.04 CI bwrap workarounds, dogfood ≈ guest, the `just promote` three-layer model (no JSONC editing), and two walked-back paths (Python orchestration; embedding in python-copier-template). Surface before edits to `.devcontainer/claude-sandbox/{claude-shadow,install.sh,promote.sh,sandbox-verify.sh,sandbox-gate.sh}`, `install`, `tests/`, `.github/workflows/ci.yml`, or `.claude/commands/verify-sandbox.md`; or before any suggestion to re-introduce Python tooling, embed in python-copier-template, persist gh/glab PATs across containers, auto-edit JSONC devcontainer.json, move the integrity guard out of managed-settings (to per-repo `.claude/` or user-scope `~/.claude`), or re-enable the in-container auto-updater.
 ---
 
 # claude-sandbox
@@ -188,9 +188,9 @@ shadow", 2026-05-12, issue #14 / PR #15).
 
 The tool is fundamentally one bash function building a bwrap argv.
 A ~110 KB Python package (pyproject, uv lockfile, pytest scaffolding,
-37 unit tests, typer CLI) made the security-critical bits harder to
-audit across multiple modules. Bash-only is ~80 lines shadow + ~80
-lines installer.
+a growing unit-test suite, typer CLI) made the security-critical bits
+harder to audit across multiple modules. Bash-only is two files — the
+shadow and the installer — each readable top-to-bottom.
 
 **Refuse without justification:**
 - "Let's add a small Python CLI for nicer error messages / config /
