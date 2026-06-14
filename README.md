@@ -59,10 +59,16 @@ every project sandboxed.
 - A curated `/etc/claude-gitconfig` so `git push` works inside the
   sandbox via `gh` / `glab` as the credential helper. Regenerated on
   every launch from your host's current `user.name` / `user.email`.
-- A workspace `.claude/settings.json` that wires a sub-second
-  `UserPromptSubmit` hook (`sandbox-check.sh`) which refuses every
-  prompt unless `IS_SANDBOX=1` is set — defence against the "user
-  invoked Claude via a non-shadow path" bypass.
+- A **global integrity guard** merged into user-scope
+  `~/.claude/settings.json` (so it fires in *every* folder, even ones
+  with no project `.claude/`): a `SessionStart` hook
+  (`sandbox-verify.sh`) that runs the full integrity battery and warns
+  loudly when Claude is unwrapped, plus a sub-second `UserPromptSubmit`
+  gate (`sandbox-gate.sh`) that **blocks every prompt** unless
+  `IS_SANDBOX=1` — defence against the "Claude launched via a non-shadow
+  path" bypass. The installer also disables Claude Code's auto-updater
+  (`DISABLE_AUTOUPDATER=1`) so the bypass can't silently re-arm. See
+  [Keeping the shadow on PATH](#keeping-the-shadow-on-path) below.
 - **Refusal-on-failure**: if the host can't run unprivileged user
   namespaces, the installer refuses with a specific actionable
   diagnostic — never installs a non-functional sandbox.
@@ -94,6 +100,36 @@ git pull --ff-only && bash install
 The installer is idempotent; the shadow is re-established without
 re-downloading Claude.
 
+## Keeping the shadow on PATH
+
+The protection is launch-time: plain `claude` must resolve to the
+shadow at `/usr/local/bin/claude`, which `bwrap`-wraps the real binary
+relocated to `/usr/libexec/claude-sandbox/claude`. **Claude Code's
+auto-updater re-creates `~/.local/bin/claude` on every version bump**,
+which (depending on your `PATH` order) can launch the real binary
+*unwrapped* — no bwrap, no git steering — and is self-entrenching and
+silent. This happened in practice: a self-update quietly disabled the
+sandbox for days.
+
+Two mechanisms close this:
+
+1. **The installer disables the in-container auto-updater**
+   (`env.DISABLE_AUTOUPDATER=1` + `autoUpdates:false` in
+   `~/.claude/settings.json`), so updates only happen when *you* re-run
+   `./install` — which re-relocates the current binary and re-asserts
+   the shadow.
+2. **The global guard fails loud (and closed) if it ever happens
+   anyway.** A `SessionStart` hook warns at launch and the
+   `UserPromptSubmit` gate blocks every prompt while unwrapped, telling
+   you to re-run `claude-sandbox/install`. To work unwrapped on purpose,
+   export `CLAUDE_SANDBOX_ALLOW_UNWRAPPED=1` (the SessionStart warning
+   still shows; the gate stops blocking).
+
+The guard is **global** — it lives in user-scope `~/.claude` and runs in
+every folder, including ones with no project `.claude/`. The installer
+merges it in idempotently and never clobbers your own
+`~/.claude/settings.json` keys (your `statusLine` is set only if absent).
+
 ## Promoting into a host workspace
 
 `just promote` makes a target workspace a self-sufficient claude-sandbox
@@ -108,9 +144,11 @@ just promote /workspaces/fastcs    # promote into the named target
 
 Three things land in the target:
 
-1. **Curated `.claude/`** — commands, skills, hooks, statusline; plus a
-   surgical merge of our `sandbox-check.sh` hook + `statusLine` into
-   `<target>/.claude/settings.json` (pre-existing keys preserved).
+1. **Curated `.claude/`** — commands and skills. The integrity guard is
+   **not** seeded per-repo; it's global (wired into `~/.claude` by
+   `install.sh`, which the target's `postCreate` runs), so promote no
+   longer touches the target's project `settings.json`, hooks, or
+   statusline.
 2. **Install machinery** — `.devcontainer/claude-sandbox/{install.sh,
    claude-shadow, promote.sh}`, so postCreate can run install.sh
    directly. The root `install` shim is *not* copied; it's the source
@@ -130,8 +168,11 @@ it or need to combine with an existing `postCreateCommand`. One-time
 edit; subsequent `just promote` runs are byte-stable.
 
 `just promote` is idempotent, refuses self-targeting (`TARGET == clone`),
-and does NOT touch `~/.claude` — that channel stays reserved for
-cross-container shared state (OAuth, memories).
+and does NOT itself touch `~/.claude`. The global integrity guard *does*
+live in `~/.claude`, but it's written by `install.sh` (which the target's
+`postCreate` runs), not by promote — so the shared `~/.claude` channel
+(OAuth, memories, and now the guard) stays the installer's responsibility,
+keeping promote's per-repo writes minimal.
 
 ## Workspace scope
 

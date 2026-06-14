@@ -3,12 +3,19 @@
 # devcontainer rebuild re-establish container state without disturbing
 # workspace edits.
 #
-# Two configurable seams for tests:
-#   INSTALL_PREFIX   (default /)   — root of file placement, so
+# Three configurable seams for tests:
+#   INSTALL_PREFIX    (default /)   — root of file placement, so
 #                                    tests/smoke.sh can drop everything
 #                                    into a tmpdir.
-#   INSTALL_WORKSPACE (default $PWD) — workspace whose `.claude/` gets
-#                                    the settings+hook wired in.
+#   INSTALL_WORKSPACE (default $PWD) — workspace whose `.claude/` is the
+#                                    rw bind root (still used by the
+#                                    shadow); no longer carries the
+#                                    integrity guard, which is global.
+#   INSTALL_USER_HOME (default $HOME) — home whose user-scope
+#                                    `~/.claude/settings.json` gets the
+#                                    GLOBAL integrity guard merged in.
+#                                    Tests point it at a tmpdir so the
+#                                    real ~/.claude is never touched.
 #   CLAUDE_SANDBOX_SMOKE=1            skip apt + curl-install-claude.
 set -euo pipefail
 
@@ -17,6 +24,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 PREFIX="${INSTALL_PREFIX:-/}"
 WORKSPACE="${INSTALL_WORKSPACE:-$PWD}"
+USER_HOME="${INSTALL_USER_HOME:-$HOME}"
 SMOKE="${CLAUDE_SANDBOX_SMOKE:-0}"
 
 # Resolve a target under $PREFIX. Stripping the leading slash lets us
@@ -117,6 +125,21 @@ install_file() {
     install -m 0755 "$src" "$dst"
 }
 
+# install_file_if_absent: place src at dst (mode 0755) only when dst is
+# absent. Used for the user-scope statusline, which we seed on a fresh
+# machine but never stomp if the owner already has one — the field is
+# likewise set-only-if-absent in wire_user_settings.
+install_file_if_absent() {
+    local src="$1" dst="$2"
+    if [ ! -f "$src" ]; then
+        echo "claude-sandbox: cannot find $src" >&2
+        exit 1
+    fi
+    [ -f "$dst" ] && return 0
+    mkdir -p "$(dirname "$dst")"
+    install -m 0755 "$src" "$dst"
+}
+
 ensure_cred_dirs() {
     mkdir -p "$HOME/.config/gh" "$HOME/.config/glab-cli"
     touch "$HOME/.claude.json"
@@ -157,91 +180,91 @@ link_terminal_config() {
     [ -e "$HOME/.claude.json" ] || [ -L "$HOME/.claude.json" ] || ln -s "$shared/.claude.json" "$HOME/.claude.json"
 }
 
-# wire_settings_hook: surgical UserPromptSubmit-hook merge into
-# <workspace>/.claude/settings.json.
-#   - file absent → write minimal {"hooks":{"UserPromptSubmit":[...]}}.
-#   - file parses as JSON via jq → merge, dedup by command basename.
-#   - file is JSONC (jq parse fails) → refuse with paste-this snippet.
-#   - existing entry with same basename but different command → refuse.
-wire_settings_hook() {
-    local settings="$WORKSPACE/.claude/settings.json"
-    local hook_cmd=".claude/hooks/sandbox-check.sh"
-    mkdir -p "$(dirname "$settings")"
+# Command strings stamped into the user-scope settings.json. ABSOLUTE
+# ($HOME-rooted, expanded by Claude's shell at hook-launch) so they
+# resolve from any cwd — a relative command only works when cwd ==
+# project root, which a global guard cannot assume. $HOME is left
+# literal so a single settings.json works across every container that
+# shares it (all run as root). Mirrors the owner's own statusLine form.
+GUARD_DIR_REL=".claude/claude-sandbox"
+VERIFY_CMD='bash $HOME/'"$GUARD_DIR_REL"'/sandbox-verify.sh'
+GATE_CMD='bash $HOME/'"$GUARD_DIR_REL"'/sandbox-gate.sh'
+USER_SL_CMD='bash $HOME/.claude/statusline-command.sh'
 
-    local minimal
-    minimal="$(jq -n --arg cmd "$hook_cmd" '{
-        hooks: {
-            UserPromptSubmit: [
-                {hooks: [{type: "command", command: $cmd}]}
-            ]
-        }
-    }')"
-
-    if [ ! -f "$settings" ]; then
-        printf '%s\n' "$minimal" > "$settings"
-        chmod 0644 "$settings"
-        return 0
+# install_user_guard: place the GLOBAL integrity guard scripts at
+# absolute paths under ~/.claude so they fire in every cwd (the old
+# per-repo .claude/hooks/sandbox-check.sh only guarded folders that had
+# a project .claude/ — and a Claude Code self-update that re-creates
+# ~/.local/bin/claude silently bypassed it). The statusline is seeded
+# only-if-absent so an owner-customised one survives.
+install_user_guard() {
+    local guard_dir="$USER_HOME/$GUARD_DIR_REL"
+    install_file "$SCRIPT_DIR/sandbox-verify.sh" "$guard_dir/sandbox-verify.sh"
+    install_file "$SCRIPT_DIR/sandbox-gate.sh"   "$guard_dir/sandbox-gate.sh"
+    # Statusline is cosmetic + optional: place it only when the source
+    # exists (a promoted target ships the guard scripts but not the
+    # statusline) and the dest is absent (never stomp an owner's own).
+    local sl_src="$REPO_ROOT/.claude/statusline-command.sh"
+    if [ -f "$sl_src" ]; then
+        install_file_if_absent "$sl_src" "$USER_HOME/.claude/statusline-command.sh"
     fi
-
-    if ! jq -e . "$settings" >/dev/null 2>&1; then
-        cat >&2 <<EOF
-claude-sandbox: refusing — $settings is JSONC (jq parse failed).
-Please paste the following snippet by hand into the file:
-
-$minimal
-
-EOF
-        exit 1
-    fi
-
-    # Dedup by command basename. If an entry with basename
-    # sandbox-check.sh exists with a *different* command, refuse.
-    local existing_conflict
-    existing_conflict="$(jq -r --arg base "sandbox-check.sh" --arg cmd "$hook_cmd" '
-        (.hooks.UserPromptSubmit // [])
-        | map(.hooks // [])
-        | flatten
-        | map(select(.command != null and (.command | split("/") | last) == $base and .command != $cmd))
-        | .[0].command // empty
-    ' "$settings")"
-    if [ -n "$existing_conflict" ]; then
-        echo "claude-sandbox: refusing — $settings already has a sandbox-check.sh hook at '$existing_conflict' that differs from our '$hook_cmd'. Reconcile manually." >&2
-        exit 1
-    fi
-
-    local merged tmp
-    merged="$(jq --arg cmd "$hook_cmd" '
-        .hooks //= {}
-        | .hooks.UserPromptSubmit //= []
-        | if any(.hooks.UserPromptSubmit[].hooks[]?; .command == $cmd) then .
-          else .hooks.UserPromptSubmit += [
-              {hooks: [{type: "command", command: $cmd}]}
-            ]
-          end
-    ' "$settings")"
-    tmp="$(mktemp "$settings.XXXXXX")"
-    printf '%s\n' "$merged" > "$tmp"
-    chmod 0644 "$tmp"
-    mv "$tmp" "$settings"
 }
 
-# wire_settings_statusline: stamp our .statusLine into settings.json
-# iff the field is absent. Any pre-existing .statusLine — ours or the
-# user's — is left alone, so a user who customised theirs keeps it
-# across rebuilds. wire_settings_hook runs first and guarantees the
-# file exists and parses as JSON, so no JSONC branch is needed here.
-wire_settings_statusline() {
-    local settings="$WORKSPACE/.claude/settings.json"
-    local sl_cmd=".claude/statusline-command.sh"
+# wire_user_settings: idempotent jq merge into the user-scope
+# ~/.claude/settings.json — the one settings file the real `claude`
+# reads in EVERY folder, even when launched unwrapped past the shadow.
+# Adds, only if absent (dedup by command basename):
+#   - SessionStart  → sandbox-verify.sh (full battery + loud warn)
+#   - UserPromptSubmit → sandbox-gate.sh (lean fail-closed gate)
+# Always sets env.DISABLE_AUTOUPDATER=1 + autoUpdates=false (root-cause
+# removal: the in-container updater is what re-arms the bypass). Sets
+# .statusLine only when absent. All other keys — the owner's own — are
+# preserved verbatim. Re-running is byte-stable.
+#
+# A non-JSON (JSONC) settings.json is WARNED about and skipped rather
+# than refused: the shadow + relocated binary are the core protection
+# and we must not brick the rest of the install over a global file we
+# don't own. Claude itself parses settings.json as strict JSON, so this
+# case is largely theoretical.
+wire_user_settings() {
+    local settings="$USER_HOME/.claude/settings.json"
+    mkdir -p "$(dirname "$settings")"
 
-    if jq -e '.statusLine' "$settings" >/dev/null 2>&1; then
+    if [ -f "$settings" ] && ! jq -e . "$settings" >/dev/null 2>&1; then
+        cat >&2 <<EOF
+claude-sandbox: WARNING — $settings is not valid JSON (JSONC?).
+Skipping the GLOBAL integrity-guard merge. Hand-add to "hooks":
+  "SessionStart":    [{"hooks":[{"type":"command","command":"$VERIFY_CMD"}]}]
+  "UserPromptSubmit":[{"hooks":[{"type":"command","command":"$GATE_CMD"}]}]
+and set "env":{"DISABLE_AUTOUPDATER":"1"}, "autoUpdates": false.
+EOF
         return 0
     fi
 
-    local merged tmp
-    merged="$(jq --arg cmd "$sl_cmd" '
-        .statusLine = {type: "command", command: $cmd}
-    ' "$settings")"
+    local input merged tmp sl_present=false
+    if [ -f "$settings" ]; then input="$(cat "$settings")"; else input='{}'; fi
+    # Only wire .statusLine when the script actually landed — otherwise a
+    # promoted target with no statusline source would get a field
+    # pointing at a missing file (a broken statusline).
+    if [ -f "$USER_HOME/.claude/statusline-command.sh" ]; then sl_present=true; fi
+
+    merged="$(printf '%s' "$input" | jq \
+        --arg verify "$VERIFY_CMD" --arg gate "$GATE_CMD" --arg sl "$USER_SL_CMD" \
+        --argjson slp "$sl_present" '
+        .hooks //= {}
+        | .hooks.SessionStart //= []
+        | .hooks.UserPromptSubmit //= []
+        | .env //= {}
+        | .env.DISABLE_AUTOUPDATER = "1"
+        | .autoUpdates = false
+        | (if (.hooks.SessionStart | any(.[].hooks[]?; (.command // "") | endswith("sandbox-verify.sh")))
+             then . else .hooks.SessionStart += [{hooks:[{type:"command",command:$verify}]}] end)
+        | (if (.hooks.UserPromptSubmit | any(.[].hooks[]?; (.command // "") | endswith("sandbox-gate.sh")))
+             then . else .hooks.UserPromptSubmit += [{hooks:[{type:"command",command:$gate}]}] end)
+        | (if ($slp and .statusLine == null) then .statusLine = {type:"command",command:$sl} else . end)
+    ')"
+
+    mkdir -p "$(dirname "$settings")"
     tmp="$(mktemp "$settings.XXXXXX")"
     printf '%s\n' "$merged" > "$tmp"
     chmod 0644 "$tmp"
@@ -261,25 +284,27 @@ main() {
     link_terminal_config
     install_claude_binary
     ensure_cred_dirs
-    install_file "$REPO_ROOT/.claude/hooks/sandbox-check.sh" \
-                 "$WORKSPACE/.claude/hooks/sandbox-check.sh"
-    install_file "$REPO_ROOT/.claude/statusline-command.sh" \
-                 "$WORKSPACE/.claude/statusline-command.sh"
     install_conf
-    wire_settings_hook
-    wire_settings_statusline
+    # GLOBAL integrity guard: lives in user-scope ~/.claude (after
+    # link_terminal_config so it follows the shared-config symlink when
+    # present), NOT per-workspace. Fires in every cwd, including folders
+    # with no project .claude/.
+    install_user_guard
+    wire_user_settings
 
     echo "claude-sandbox: install complete."
     echo "  shadow:      $(prefixed /usr/local/bin/claude)"
     echo "  real claude: $(prefixed /usr/libexec/claude-sandbox/claude)"
     echo "  config:      $(prefixed /etc/claude-sandbox.conf)"
+    echo "  guard:       $USER_HOME/$GUARD_DIR_REL/{sandbox-verify,sandbox-gate}.sh (global, user-scope)"
+    echo "  settings:    $USER_HOME/.claude/settings.json (SessionStart + UserPromptSubmit + DISABLE_AUTOUPDATER)"
     echo "  workspace:   $WORKSPACE"
     echo "  run \`/verify-sandbox\` inside Claude for the live battery."
 }
 
-# Source guard: `promote.sh` re-uses `install_file`,
-# `wire_settings_hook`, and `wire_settings_statusline` by sourcing this
-# file. The guard keeps main() from auto-running in that case.
+# Source guard: `promote.sh` re-uses `install_file` (and friends) by
+# sourcing this file. The guard keeps main() from auto-running in that
+# case.
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     main "$@"
 fi

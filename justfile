@@ -2,8 +2,9 @@
 # `just promote`, so every recipe here must be useful in both the
 # source clone and a promoted host workspace.
 
-# Seed the sandbox's curated `.claude/` (commands, skills, hooks,
-# statusline, sandbox-check hook) into a target host workspace. See
+# Seed the sandbox's curated `.claude/` (commands, skills) into a target
+# host workspace. The integrity guard is global (wired into ~/.claude by
+# install.sh), not seeded per-repo. See
 # .devcontainer/claude-sandbox/promote.sh for the rationale.
 promote target=invocation_directory():
     bash .devcontainer/claude-sandbox/promote.sh {{ target }}

@@ -6,8 +6,11 @@
 #
 # Three layers of effect, in order:
 #
-# 1. Curated `.claude/` content (commands, skills, hooks, statusline,
-#    sandbox-check hook + statusLine wiring into settings.json).
+# 1. Curated `.claude/` content (commands, skills). The integrity
+#    GUARD is no longer seeded per-repo — it is global, wired into
+#    user-scope ~/.claude/settings.json by install.sh (which the
+#    target's postCreate runs). So promote no longer touches the
+#    target's project settings.json, hooks, or statusline.
 # 2. Install machinery (`.devcontainer/claude-sandbox/{install.sh,
 #    claude-shadow, promote.sh}` + root `justfile`) so postCreate can
 #    run install.sh directly and `just promote`/`just gh-auth` work in
@@ -53,10 +56,11 @@ if [ "$TARGET" = "$REPO_ROOT" ]; then
     exit 1
 fi
 
-# Hand WORKSPACE off to install.sh's wire_settings_{hook,statusline} —
-# they operate on "$WORKSPACE/.claude/settings.json".
-INSTALL_WORKSPACE="$TARGET"
-export INSTALL_WORKSPACE
+# Source install.sh purely to reuse its file helpers (install_file,
+# install_file_if_absent, copy machinery). The integrity guard is global
+# now, so promote no longer drives any workspace-scope settings merge —
+# install.sh's main() is the only thing that wires ~/.claude, and the
+# source-guard keeps it from running here.
 # shellcheck source=./install.sh
 . "$SCRIPT_DIR/install.sh"
 
@@ -151,23 +155,26 @@ won't be able to push; useful for read/edit-only sessions):
 EOF
 }
 
-# Layer 1: curated .claude/ content + settings merge.
+# Layer 1: curated .claude/ content (commands + skills). The integrity
+# guard is global (wired into ~/.claude by install.sh), so promote no
+# longer copies hooks/statusline or merges the target's project
+# settings.json — that channel is left entirely to the user.
 copy_tree "$REPO_ROOT/.claude/commands" "$TARGET/.claude/commands"
 copy_tree "$REPO_ROOT/.claude/skills"   "$TARGET/.claude/skills"
-copy_tree "$REPO_ROOT/.claude/hooks"    "$TARGET/.claude/hooks"
-install_file "$REPO_ROOT/.claude/statusline-command.sh" \
-             "$TARGET/.claude/statusline-command.sh"
-wire_settings_hook
-wire_settings_statusline
 
 # Layer 2: install machinery — the target becomes self-installing so a
 # teammate doesn't need a second clone of claude-sandbox. The root
 # `install` shim is NOT copied; promoted repos invoke install.sh
 # directly from postCreate.sh. The shim is the source repo's manual-UX
 # entry (`./install`) and isn't a primary workflow for targets.
-install_file "$SCRIPT_DIR/install.sh"    "$TARGET/.devcontainer/claude-sandbox/install.sh"
-install_file "$SCRIPT_DIR/claude-shadow" "$TARGET/.devcontainer/claude-sandbox/claude-shadow"
-install_file "$SCRIPT_DIR/promote.sh"    "$TARGET/.devcontainer/claude-sandbox/promote.sh"
+install_file "$SCRIPT_DIR/install.sh"       "$TARGET/.devcontainer/claude-sandbox/install.sh"
+install_file "$SCRIPT_DIR/claude-shadow"    "$TARGET/.devcontainer/claude-sandbox/claude-shadow"
+install_file "$SCRIPT_DIR/promote.sh"       "$TARGET/.devcontainer/claude-sandbox/promote.sh"
+# The global guard scripts install.sh places under ~/.claude. Ship them
+# so a promoted target's postCreate `install.sh` can find them (it reads
+# them from its own .devcontainer/claude-sandbox/, not from a clone).
+install_file "$SCRIPT_DIR/sandbox-verify.sh" "$TARGET/.devcontainer/claude-sandbox/sandbox-verify.sh"
+install_file "$SCRIPT_DIR/sandbox-gate.sh"   "$TARGET/.devcontainer/claude-sandbox/sandbox-gate.sh"
 
 # Root justfile — the recipes shipped here (promote, gh-auth,
 # glab-auth) are workflow tools a promoted host needs too. Recipes

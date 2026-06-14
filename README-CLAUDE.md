@@ -261,9 +261,21 @@ it as a CI assertion), and the FAIL line names which defence
 regressed. The full spec lives at
 `.claude/commands/verify-sandbox.md`.
 
-A pre-prompt hook (`.claude/hooks/sandbox-check.sh`) runs a
-sub-second subset of these checks before every prompt and blocks the
-prompt if the sandbox is not intact.
+A **global integrity guard** in user-scope `~/.claude/settings.json`
+runs in every folder (even ones with no project `.claude/`):
+
+- `SessionStart` → `~/.claude/claude-sandbox/sandbox-verify.sh` runs
+  the full integrity subset once per session and warns loudly (it
+  cannot block — SessionStart hooks only inject messages/context) when
+  Claude is running outside the shadow.
+- `UserPromptSubmit` → `~/.claude/claude-sandbox/sandbox-gate.sh` is a
+  sub-second fail-closed gate: it blocks every prompt unless
+  `IS_SANDBOX=1`. Set `CLAUDE_SANDBOX_ALLOW_UNWRAPPED=1` to downgrade to
+  warn-only. Both skip on Claude Code Web (`CLAUDE_CODE_REMOTE=true`).
+
+See [Keeping the shadow on PATH](./README.md#keeping-the-shadow-on-path)
+for why this lives in user-scope and why the installer disables the
+auto-updater.
 
 ## What's installed
 
@@ -276,12 +288,21 @@ typically wired into `postCreate.sh`:
 | `/usr/local/bin/claude` | `.devcontainer/claude-sandbox/claude-shadow` (verbatim) | Shadow that wraps the real binary in `bwrap`. Falls through to the real binary when `IS_SANDBOX=1` so internal `claude` invocations from a hook don't recurse |
 | `/etc/claude-gitconfig` | Generated | Curated gitconfig — regenerated from `git config --get user.{name,email}` on every shadow launch |
 
-Workspace — placed-once, idempotent, never silently overwritten:
+User-scope `~/.claude` (the GLOBAL integrity guard — fires in every
+folder, idempotent, never clobbers your own settings):
 
 | Path | Behaviour |
 |---|---|
-| `<workspace>/.claude/settings.json` | Created from scratch if missing; one-key surgical merge of `hooks.UserPromptSubmit` only if pre-existing. No other settings key is ever touched. JSONC files (containing `//` comments) are refused with a paste-this snippet rather than parsed |
-| `<workspace>/.claude/hooks/sandbox-check.sh` | The `UserPromptSubmit` hook that gatekeeps every prompt |
+| `~/.claude/claude-sandbox/sandbox-verify.sh` | `SessionStart` hook — full integrity battery + loud warn when unwrapped |
+| `~/.claude/claude-sandbox/sandbox-gate.sh` | `UserPromptSubmit` hook — sub-second fail-closed gate (`IS_SANDBOX=1` or block) |
+| `~/.claude/statusline-command.sh` | Statusline — seeded **only if absent** (an owner-customised one survives) |
+| `~/.claude/settings.json` | jq-merged idempotently: adds the two hooks (deduped by basename), sets `env.DISABLE_AUTOUPDATER=1` + `autoUpdates:false`, sets `.statusLine` only if absent. Every other key — yours — is preserved verbatim. A non-JSON (JSONC) file is warned about and skipped, not parsed |
+
+Disabling the auto-updater is **root-cause removal**: Claude Code's
+updater otherwise re-creates `~/.local/bin/claude` on a version bump,
+which can launch the real binary unwrapped and self-entrench. With the
+updater off, updates happen only via a deliberate `./install`, which
+re-relocates the current binary and re-asserts the shadow.
 
 Not placed: `CLAUDE.md` and `README-CLAUDE.md` live in the meta-repo
 for dogfooding.
