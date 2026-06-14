@@ -42,6 +42,9 @@ Use Claude exactly as you normally would. Because the shadow now sits on
 your `$PATH`, plain `claude` is automatically wrapped in the sandbox —
 nothing else to remember.
 
+```{include} ../_snippets/clone-note.md
+```
+
 ## 4. Confirm the sandbox with `/verify-sandbox`
 
 From inside the Claude session, run:

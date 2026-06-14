@@ -3,6 +3,9 @@
 Confirm that the Claude process you are running is actually inside the
 bwrap isolation, and that no defence has regressed.
 
+```{include} ../_snippets/clone-note.md
+```
+
 ## Run the verification
 
 From inside a Claude session:

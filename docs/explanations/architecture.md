@@ -137,38 +137,37 @@ single bind-back list restores exactly what Claude legitimately needs under
 
 ```{mermaid}
 graph TD
-    base["--ro-bind / /<br/>(read-only base: default-deny)"]
-
+    base["--ro-bind / /<br/>read-only base"]
     base --> tmpfs
 
     subgraph tmpfs["tmpfs masks (wiped)"]
-        h["--tmpfs $HOME"]
-        t["--tmpfs /tmp"]
-        ru["--tmpfs /run/user *"]
-        rs["--tmpfs /run/secrets *"]
+        h["$HOME"]
+        t["/tmp"]
+        ru["/run/user *"]
+        rs["/run/secrets *"]
     end
 
     h --> bindback
 
-    subgraph bindback["explicit bind-back under $HOME (allow-list)"]
+    subgraph bindback["bind-back under $HOME (allow-list)"]
         direction TB
-        claude[".claude  .claude.json<br/>(state, OAuth token)"]
+        claude[".claude · .claude.json"]
         cache[".cache"]
-        forge[".config/gh  .config/glab-cli<br/>(strict allow-list; skipped if NO_FORGE)"]
-        share[".local/share (bulk-bound)<br/>helm / krew / uv data"]
-        uv[".local/bin/uv  .local/bin/uvx"]
-        realbin["real claude → ~/.local/bin/claude"]
+        forge[".config/gh · .config/glab-cli"]
+        share[".local/share<br/>helm · krew · uv"]
+        uv[".local/bin/uv · uvx"]
+        realbin["real claude"]
     end
 
     share --> masked
 
-    subgraph masked["re-masked inside the bind (stay ephemeral)"]
-        apps["--tmpfs .local/share/applications"]
-        ccache["--tmpfs .local/share/claude"]
+    subgraph masked["re-masked (ephemeral)"]
+        apps[".local/share/applications"]
+        ccache[".local/share/claude"]
     end
 
-    subgraph nullmask["bound to /dev/null (defence in depth)"]
-        netrc[".netrc  .Xauthority  .ICEauthority"]
+    subgraph nullmask["bound to /dev/null"]
+        netrc[".netrc<br/>.Xauthority<br/>.ICEauthority"]
     end
 
     h -.-> nullmask

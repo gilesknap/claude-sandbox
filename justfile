@@ -1,6 +1,7 @@
 # claude-sandbox recipes. Shipped verbatim into promoted targets via
-# `just promote`, so every recipe here must be useful in both the
-# source clone and a promoted host workspace.
+# `just promote`, so every recipe here must be SAFE in both the source
+# clone and a promoted host workspace. Dev-only recipes (e.g. `docs`)
+# self-guard: they no-op where they don't apply rather than erroring.
 
 # Seed the sandbox's curated `.claude/` (commands, skills) into a target
 # host workspace. The integrity guard is global (wired into ~/.claude by
@@ -54,3 +55,19 @@ glab-auth hostname="gitlab.com":
     echo "$t" | glab auth login --stdin --hostname {{ hostname }} --git-protocol https
     unset t
     glab auth status
+
+# Provisions an isolated .venv-docs on first run; no-ops where there is no
+# docs/ Sphinx project, so it stays promote-target-safe.
+# Live-reload preview of the docs/ site at http://localhost:<port>.
+docs port="8000":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ ! -f docs/conf.py ] || [ ! -f docs/requirements.txt ]; then
+        echo "No docs/{conf.py,requirements.txt} here — 'just docs' is a no-op in this workspace."
+        exit 0
+    fi
+    if [ ! -x .venv-docs/bin/sphinx-autobuild ]; then
+        uv venv .venv-docs
+        uv pip install --python .venv-docs -r docs/requirements.txt sphinx-autobuild
+    fi
+    exec .venv-docs/bin/sphinx-autobuild docs build/html --port {{ port }}
