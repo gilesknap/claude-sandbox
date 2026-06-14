@@ -7,6 +7,12 @@ Podman is the supported runtime; rootless Docker works too). A
 hostile prompt, file, or tool result cannot reach your host
 credentials, IDE bridges, or shell environment.
 
+📖 **Full documentation:** <https://gilesknap.github.io/claude-sandbox/>
+— Diátaxis-organised tutorials, how-to guides, reference, and an
+[architecture overview](https://gilesknap.github.io/claude-sandbox/explanations/architecture.html)
+with diagrams. Built from `docs/` with Sphinx and published to GitHub
+Pages on every push to `main`.
+
 ## Quickstart
 
 Inside any Debian/Ubuntu devcontainer (running as `root`, typical

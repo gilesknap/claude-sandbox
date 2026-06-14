@@ -9,3 +9,8 @@
 
 # vscode workspaces
 *.code-workspace
+
+# Sphinx docs build output + local docs venv
+build/
+docs/_build/
+.venv-docs/
