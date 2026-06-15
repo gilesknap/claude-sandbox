@@ -42,7 +42,7 @@ gh api repos/<owner>/<repo>/pulls/<N>/comments --paginate \
   | jq -r '.[]
       | select(.in_reply_to_id == null)
       | select(.user.login | test("<reviewer>"; "i"))   # optional filter
-      | "id:\(.id)\t\(.user.login)\t\(.path):\(.line // .original_line)\t\(.body | split("\n")[2])"'
+      | "id:\(.id)\t\(.user.login)\t\(.path):\(.line // .original_line)\t\((.body | split("\n") | map(select(. != ""))[0]) // "")"'
 ```
 
 ```bash
