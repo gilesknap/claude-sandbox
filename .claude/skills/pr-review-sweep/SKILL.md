@@ -16,6 +16,10 @@ A loop for clearing many inline review comments, from any reviewer — bot or
 human. Core rule:
 
 > **Fan out for analysis (read-only, parallel). Serialize every write.**
+>
+> **Every write waits for its own go** — each commit, reply, and resolve is
+> approved explicitly, in its own turn. Plan approval and `needs-decision`
+> answers don't count.
 
 Analysis of each comment is independent and read-only, so subagents parallelise
 it. Edits, commits, replies and resolves touch shared state (git index, working
@@ -91,18 +95,28 @@ as it lands; only the step-3 grouping pass needs all verdicts in hand.
 Dedup/cluster coupled findings (call out one-shot resolutions, e.g. "removing
 `foo.patch` resolves #13–16"), order into logical commits (one per coherent fix,
 even if it closes several comments), and flag `needs-decision` items with a
-recommendation. Present the plan and wait for approval — this sets the *shape*,
-not a blanket go-ahead to edit unattended.
+recommendation. Present the plan and wait for approval.
 
-### 4. Apply serially — per-commit veto
+**Plan approval sets the *shape* only — it authorises no edit, commit, or push.**
+A `needs-decision` answer ("yes, delete it") settles the *what*, not the go:
+still present that item's diff in step 4 and wait. Editing in the same turn a
+plan or decision landed means you skipped the gate.
 
-One logical fix at a time. **Before each commit:** show the exact diff (or file
-list for a deletion) for *this item only*, one line on why, and the commit
-message — then stop for go / veto / tweak. Don't bundle items; the user weighs
-each on its own. On **go**: edit, quick-validate where cheap (lint / the one
-relevant test / re-grep — don't claim a fix you didn't check), commit with the
-project's sign-off trailer, capture the SHA. On **veto**: drop it (→ `deferred`).
-Never apply a later item while waiting on the current veto.
+### 4. Apply serially — one explicit go per commit
+
+The commit is a hard gate. Present and commit in **two separate turns**:
+
+- **Turn A — present, then STOP.** For *this item only*: the proposed diff (or
+  file list for a deletion), one line why, the commit message. End the turn — no
+  edit, no `git add`, no commit yet.
+- **Turn B — on an explicit go:** edit, quick-validate where cheap (lint / one
+  relevant test / re-grep — don't claim a fix you didn't check), commit with the
+  project's sign-off trailer, capture the SHA, then present the next item.
+
+A go covers one item; re-present each. On **veto**: drop it (→ `deferred`) and
+don't touch later items while waiting. A commit landing without the user speaking
+between diff and commit means you broke the gate — *even if the fix was right*.
+Only an unprompted, explicit "do them all" lifts the per-item stop.
 
 ### 5. Reply and resolve each thread
 
