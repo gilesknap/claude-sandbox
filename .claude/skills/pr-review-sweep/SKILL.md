@@ -72,8 +72,9 @@ git log @{u}..HEAD --oneline   # local commits not yet on the remote
 ```
 
 Unpushed commits usually mean an interrupted earlier sweep already fixed some
-comments. Don't redo those (a subagent will return `moot`) — reply citing the
-existing SHA. And they aren't resolved on the PR until pushed (step 5 invariant).
+comments. Don't redo those (a subagent will return `moot`). They aren't on the
+PR diff and can't be cited yet — defer their reply+resolve until after the push
+(step 6), then cite the now-remote SHA (step 5's pushed-SHA invariant).
 
 ### 2. Fan out analysis — one read-only subagent per comment
 
