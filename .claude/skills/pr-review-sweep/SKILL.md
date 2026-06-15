@@ -35,6 +35,13 @@ Gather unresolved threads and their top-level comments (skip reply comments and
 resolved threads). Default to all reviewers; filter by author login to target one
 bot/human.
 
+**Scope: inline review-thread comments only.** This reads `pulls/N/comments`
+(+ their `reviewThreads`) — *not* the PR-level review summary (`pulls/N/reviews`)
+or conversation comments (`issues/N/comments`). Bots like CodeRabbit put their
+actionable items inline, so those other buckets are usually just summaries — but
+a human may leave a real request in the review body, so glance at them manually
+before declaring the sweep done.
+
 ```bash
 # Work list. Drop the login `select` to include everyone, or change the pattern
 # (e.g. "coderabbit", "copilot").
