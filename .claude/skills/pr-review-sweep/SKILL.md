@@ -47,11 +47,12 @@ gh api repos/<owner>/<repo>/pulls/<N>/comments --paginate \
 
 ```bash
 # Thread IDs + resolved state (needed to resolve later), keyed by first comment.
-gh api graphql -f query='
-query($owner:String!,$repo:String!,$n:Int!){
+gh api graphql --paginate -f query='
+query($owner:String!,$repo:String!,$n:Int!,$endCursor:String){
   repository(owner:$owner,name:$repo){
     pullRequest(number:$n){
-      reviewThreads(first:100){
+      reviewThreads(first:100, after:$endCursor){
+        pageInfo{ hasNextPage endCursor }
         nodes{ id isResolved
           comments(first:1){ nodes{ databaseId author{login} path line } } } } } } }' \
   -f owner=<owner> -f repo=<repo> -F n=<N> \
