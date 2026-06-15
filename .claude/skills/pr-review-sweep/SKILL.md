@@ -12,41 +12,28 @@ description: >
 
 # Sweeping a PR's review comments
 
-A disciplined loop for clearing a large set of inline review comments, whatever
-their source — an automated reviewer (CodeRabbit, Copilot, Sourcery, …) or a
-human. The governing idea:
+A loop for clearing many inline review comments, from any reviewer — bot or
+human. Core rule:
 
 > **Fan out for analysis (read-only, parallel). Serialize every write.**
 
-Investigation of each comment is independent and read-only, so it parallelises
-cheaply across subagents. Editing, committing, replying and resolving touch
-shared mutable state (the git index, the working tree, the PR threads) and the
-user's approval, so they stay in the main agent, one at a time.
-
-## Why writes are NOT delegated to subagents
-
-- **The git index is shared state.** Concurrent `git add` / `git commit` from
-  parallel agents interleave and produce dirty or wrong commits. You cannot get
-  "one clean commit per fix" out of a race.
-- **Comments cluster.** Deleting one file can resolve many comments; two
-  comments can live in one file. Only the main agent, holding *all* verdicts at
-  once, can group coupled findings into a single sensible commit.
-- **There is an approval gate.** The user decides what gets fixed, skipped, or
-  deferred — after seeing the whole picture, not per-worker.
+Analysis of each comment is independent and read-only, so subagents parallelise
+it. Edits, commits, replies and resolves touch shared state (git index, working
+tree, PR threads) and need user approval, so the **main agent** does them one at
+a time. Subagents never edit or commit — concurrent `git` writes race, and only
+the main agent, holding every verdict, can group coupled comments into one commit.
 
 ## The loop
 
-### 1. Collect the open threads
+### 1. Collect open threads
 
-Pull the unresolved review threads and their top-level comments. Reply comments
-and already-resolved threads are noise — filter them out. By default, gather
-**all** unresolved threads; if the user only cares about one reviewer (e.g. a
-bot), filter by author login.
+Gather unresolved threads and their top-level comments (skip reply comments and
+resolved threads). Default to all reviewers; filter by author login to target one
+bot/human.
 
 ```bash
-# Top-level comments (path, line, author, title) — the work list.
-# Drop the `select(... login ...)` line to include every reviewer, or change
-# the pattern to target a specific bot/human (e.g. "coderabbit", "copilot").
+# Work list. Drop the login `select` to include everyone, or change the pattern
+# (e.g. "coderabbit", "copilot").
 gh api repos/<owner>/<repo>/pulls/<N>/comments --paginate \
   | jq -r '.[]
       | select(.in_reply_to_id == null)
@@ -55,7 +42,7 @@ gh api repos/<owner>/<repo>/pulls/<N>/comments --paginate \
 ```
 
 ```bash
-# Thread IDs + resolved state (needed later to resolve), keyed by first comment:
+# Thread IDs + resolved state (needed to resolve later), keyed by first comment.
 gh api graphql -f query='
 query($owner:String!,$repo:String!,$n:Int!){
   repository(owner:$owner,name:$repo){
@@ -69,101 +56,79 @@ query($owner:String!,$repo:String!,$n:Int!){
         | "\(.id)\t\(.comments.nodes[0].databaseId)\t\(.comments.nodes[0].path)"'
 ```
 
-Build a numbered table: `# | comment-id | thread-id | path:line | author | one-line title`.
-Present it to the user so the scope is visible up front.
+Build a numbered table (`# | comment-id | thread-id | path:line | author | title`)
+and show the user the scope.
+
+**Reconcile local vs remote first** — analysis runs against local HEAD, but PR
+threads reflect what's *pushed*:
+
+```bash
+git log @{u}..HEAD --oneline   # local commits not yet on the remote
+```
+
+Unpushed commits usually mean an interrupted earlier sweep already fixed some
+comments. Don't redo those (a subagent will return `moot`) — reply citing the
+existing SHA. And they aren't resolved on the PR until pushed (step 5 invariant).
 
 ### 2. Fan out analysis — one read-only subagent per comment
 
-Spawn `Explore` (or `general-purpose` restricted to reading) subagents, **in a
-single message** so they run concurrently. Each gets one comment's full body
-(`gh api .../comments/<id> --jq .body`) plus the file path. For same-file
-clusters you may hand one agent several comments to save tokens.
+Spawn `Explore` agents in a single message (concurrent). Give each one comment
+body (`gh api .../comments/<id> --jq .body`) plus the file; hand same-file
+clusters to one agent. Each returns a compact verdict, **not** a file dump:
 
-Instruct each subagent to return a compact, structured verdict — *not* a file
-dump:
+- **verdict**: `valid` / `moot` (already fixed or line gone at HEAD) /
+  `needs-decision` (user's call) / `wontfix` (disagree, with reason)
+- **draft**: the minimal change (or "delete file X")
+- **coupling**: comment #s it overlaps with or resolves
+- **confidence** + one line, **verified against current HEAD** (comments go stale)
 
-- **verdict**: `valid` (real, fix it) / `moot` (already fixed, outdated line, or
-  no longer present at HEAD) / `needs-decision` (a judgement call for the user) /
-  `wontfix` (disagree, with reason).
-- **draft**: the minimal diff or exact change to make (or "delete file X").
-- **coupling**: other comment numbers this overlaps with or is resolved by.
-- **confidence** + a one-line justification, **verified against current HEAD**
-  (review comments go stale — always re-check the live code, not the diff
-  snapshot the comment was written against).
-
-The subagent must NOT edit, stage, or commit anything. Its final message is the
-verdict; that is all the main agent keeps.
+Subagents never edit. For more than ~10 comments, or when the user wants to
+review as they go, launch with `run_in_background: true` and relay each verdict
+as it lands; only the step-3 grouping pass needs all verdicts in hand.
 
 ### 3. Synthesize and group
 
-With every verdict in hand, the main agent:
+Dedup/cluster coupled findings (call out one-shot resolutions, e.g. "removing
+`foo.patch` resolves #13–16"), order into logical commits (one per coherent fix,
+even if it closes several comments), and flag `needs-decision` items with a
+recommendation. Present the plan and wait for approval — this sets the *shape*,
+not a blanket go-ahead to edit unattended.
 
-- **Dedups / clusters** coupled findings. Call out one-shot resolutions
-  ("removing `foo.patch` resolves #13–16").
-- Orders into **logical commits** — one commit per coherent fix, even if it
-  closes several comments.
-- Flags `needs-decision` items for the user with a concrete recommendation.
+### 4. Apply serially — per-commit veto
 
-Present this plan and **wait for approval** before touching anything. Honour the
-standing rule: don't fix or commit without the user asking this turn.
-
-### 4. Apply serially
-
-For each approved group, in order:
-
-1. Make the edits.
-2. Quick-validate where cheap (lint the file, run the one relevant test, re-grep
-   to confirm the change, etc.). Don't claim a fix works if you didn't check it.
-3. Commit — one commit per logical fix. End the message with whatever
-   `Co-Authored-By` / sign-off trailer the project uses. Capture the short SHA.
-
-Never run two edit/commit cycles concurrently.
+One logical fix at a time. **Before each commit:** show the exact diff (or file
+list for a deletion) for *this item only*, one line on why, and the commit
+message — then stop for go / veto / tweak. Don't bundle items; the user weighs
+each on its own. On **go**: edit, quick-validate where cheap (lint / the one
+relevant test / re-grep — don't claim a fix you didn't check), commit with the
+project's sign-off trailer, capture the SHA. On **veto**: drop it (→ `deferred`).
+Never apply a later item while waiting on the current veto.
 
 ### 5. Reply and resolve each thread
-
-After the fix is committed, for every comment it closed:
 
 ```bash
 gh api repos/<owner>/<repo>/pulls/<N>/comments/<comment-id>/replies \
   -f body="Fixed in <sha> — <one line on what changed>."
-```
 
-```bash
 gh api graphql -f query='mutation($t:ID!){
   resolveReviewThread(input:{threadId:$t}){thread{isResolved}}}' \
   -f t=<thread-id> --jq '.data.resolveReviewThread.thread.isResolved'
 ```
 
-Reply *before* resolving, and only resolve once the fix is actually committed.
-For `moot` verdicts, reply explaining why (already fixed in <sha> / line no
-longer present) and resolve. For `wontfix`, reply with the reasoning and leave
-the thread for the user (or the reviewer) to resolve or rebut — don't
-unilaterally close a human's comment you disagreed with.
+Reply before resolving. **Pushed-SHA invariant:** the cited SHA must be on the
+remote first, or the reply is a dangling reference and the PR diff lacks the fix.
+So if you batch the push to the end (step 6), batch reply+resolve after it too.
+For `moot`: reply why (cite the pushed SHA / "line gone") and resolve. For
+`wontfix`: reply with reasoning and leave a human's thread for the author to close
+— don't unilaterally resolve a comment you disagreed with.
 
 ### 6. Report and push
 
-Finish with a table: each comment → `fixed <sha>` / `moot` / `deferred` /
-`wontfix`. Push at the end (not per-commit) unless the user wants otherwise:
+Final table: each comment → `fixed <sha>` / `moot` / `deferred` / `wontfix`.
+Push at the end via HTTPS + gh's credential helper (never SSH, never a PAT in the
+URL):
 
 ```bash
 GIT_CONFIG_GLOBAL=/dev/null git -c credential.helper='!gh auth git-credential' \
   push https://github.com/<owner>/<repo>.git <branch>
 ```
-
-Use HTTPS + gh's credential helper — never SSH, never a PAT in the URL.
-
-## Guardrails
-
-- **Verify every finding against current code.** Comments reference a diff
-  snapshot and go stale; a "fix" against an outdated line is worse than nothing.
-- **Writes are serial and main-agent-only.** Subagents analyse; they never edit
-  or commit.
-- **One commit per logical fix**, grouping coupled comments — not one commit per
-  comment when they share a root cause.
-- **Approval gate** before applying. Recommend, don't auto-apply.
-- **Reply cites the commit SHA**; resolve only after the commit exists.
-- **Don't unilaterally close human comments** you marked `wontfix` — leave those
-  for the author. Auto-resolving is fine for findings you actually fixed.
-- For a very large PR you can run the step-2 fan-out as a `Workflow`
-  (pipeline: analyse → the main agent still applies serially), but only if the
-  user has opted into workflow orchestration.
