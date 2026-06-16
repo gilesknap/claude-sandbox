@@ -17,6 +17,9 @@
 #                                    Tests point it at a tmpdir so the
 #                                    real ~/.claude is never touched.
 #   CLAUDE_SANDBOX_SMOKE=1            skip apt + curl-install-claude.
+#   STATUS=1                         force-overwrite the user-scope
+#                                    statusline script from the clone's
+#                                    copy, instead of seed-only-if-absent.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -26,6 +29,7 @@ PREFIX="${INSTALL_PREFIX:-/}"
 WORKSPACE="${INSTALL_WORKSPACE:-$PWD}"
 USER_HOME="${INSTALL_USER_HOME:-$HOME}"
 SMOKE="${CLAUDE_SANDBOX_SMOKE:-0}"
+FORCE_STATUSLINE="${STATUS:-0}"
 
 # Resolve a target under $PREFIX. Stripping the leading slash lets us
 # compose relative-to-prefix paths cleanly without a `//` between root
@@ -367,7 +371,13 @@ wire_user_statusline() {
 
     local sl_src="$REPO_ROOT/.claude/statusline-command.sh"
     if [ -f "$sl_src" ]; then
-        install_file_if_absent "$sl_src" "$USER_HOME/.claude/statusline-command.sh"
+        # Seed-only-if-absent by default (never stomp an owner's own);
+        # STATUS=1 forces the clone's copy to win (content-compared).
+        if [ "$FORCE_STATUSLINE" = "1" ]; then
+            install_file "$sl_src" "$USER_HOME/.claude/statusline-command.sh"
+        else
+            install_file_if_absent "$sl_src" "$USER_HOME/.claude/statusline-command.sh"
+        fi
     fi
 
     if [ -f "$settings" ] && ! jq -e . "$settings" >/dev/null 2>&1; then
