@@ -315,7 +315,7 @@ check_dot_claude_persistence() {
     mountpoint -q "$claude_dir" 2>/dev/null && return 0
     printf '\n\033[33mWARNING\033[0m: ~/.claude is not host-mounted.\n' >&2
     printf 'Claude memory, settings, and OAuth state will be lost on devcontainer rebuild.\n' >&2
-    printf 'See README-CLAUDE.md for how to persist ~/.claude across rebuilds.\n\n' >&2
+    printf 'See https://gilesknap.github.io/claude-sandbox/how-to/persist-login-and-memory.html\n\n' >&2
     read -rsp "Press any key to continue..." -n 1 _key </dev/tty
     printf '\n\n' >&2
 }

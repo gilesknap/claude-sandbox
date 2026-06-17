@@ -15,7 +15,7 @@ auto-memory `MEMORY.md` for this project. Include:
 - Current status (completed, blocked, in-progress)
 - Key decisions or outcomes worth remembering across conversations
 
-Do not duplicate information already in skills, CLAUDE.md, or README-CLAUDE.md.
+Do not duplicate information already in skills or CLAUDE.md.
 
 ## Step 2 — Promote to skills
 
@@ -36,7 +36,7 @@ Examples of promotable items:
 ## Step 3 — Trim memory
 
 Remove from memory anything that is:
-- Already captured in skills, CLAUDE.md, or README-CLAUDE.md
+- Already captured in skills or CLAUDE.md
 - Too specific to a single completed task to be useful again
 - Stale or superseded by later work
 
