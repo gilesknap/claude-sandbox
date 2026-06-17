@@ -66,7 +66,12 @@ docs port="8000":
         echo "No docs/{conf.py,requirements.txt} here — 'just docs' is a no-op in this workspace."
         exit 0
     fi
-    if [ ! -x .venv-docs/bin/sphinx-autobuild ]; then
+    # Re-provision if missing OR stale: the venv lives in the workspace mount
+    # but its uv-managed interpreter lives outside it, so a container rebuild
+    # leaves a dangling python symlink. Probe the interpreter, not just the
+    # script file, or we'd skip the rebuild and die on exec (127).
+    if ! .venv-docs/bin/python -c '' 2>/dev/null || [ ! -x .venv-docs/bin/sphinx-autobuild ]; then
+        rm -rf .venv-docs
         uv venv .venv-docs
         uv pip install --python .venv-docs -r docs/requirements.txt sphinx-autobuild
     fi
