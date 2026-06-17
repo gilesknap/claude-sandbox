@@ -6,7 +6,7 @@ description: Verify the Claude sandbox is intact — runs the 18-check PASS/FAIL
 
 1. The deterministic **18-check battery** — small bash tests that each
    return PASS or FAIL with a one-line explanation. Covers every
-   defence in `README-CLAUDE.md`'s "What's locked down" table.
+   defence in the [locked-down defences](https://gilesknap.github.io/claude-sandbox/reference/locked-down-defences.html) table.
 2. When (and only when) the 18 checks all pass, **10 adversarial
    breakout probes** — open-ended attempts to escape the sandbox or
    exfiltrate credentials, designed by reasoning about gaps the
@@ -45,7 +45,7 @@ init (`sh`) instead of the sandbox target. The "bwrap is in our
 ancestry" property is already covered by check 01 (`IS_SANDBOX=1`
 is only set by `bwrap --setenv`), so check 02 was redundant *and*
 broken on the hosts we care about. Repurposed to cover NO_NEW_PRIVS,
-which was previously listed as "Implicit" in README-CLAUDE.md with
+which was previously listed as "Implicit" in the locked-down table with
 no PASS/FAIL check of its own.
 
 ```bash
@@ -59,7 +59,7 @@ grep -q '^NoNewPrivs:[[:space:]]*1$' /proc/self/status
 in from the host, plus a `.config` intermediate tmpfs that holds the
 `gh` / `glab-cli` credential binds. The `.local/share` bind is the
 XDG-data bulk-mount (helm plugins, krew, uv-managed Python, etc.) —
-see README-CLAUDE.md's "XDG split rationale". Under `.local/share`,
+see the [XDG split rationale](https://gilesknap.github.io/claude-sandbox/explanations/sandbox-internals.html). Under `.local/share`,
 two sub-dirs stay tmpfs-masked: `applications/` (Claude Code's
 `.desktop` URL handler, which we don't want registered on the host
 desktop environment) and `claude/` (Claude Code's versioned binary
@@ -151,7 +151,7 @@ scoping is intact. The launch-time probe in claude-shadow detects this
 and sets `CLAUDE_SANDBOX_FRESH_PROC=0`. Credential-bearing procfs
 entries (`/proc/<pid>/environ`, `/maps`, `/fd`, `/mem`) stay gated by
 `PTRACE_MODE_READ_FSCREDS` + YAMA `ptrace_scope=1`, so leaked
-visibility does not become credential exfil — but see README-CLAUDE.md
+visibility does not become credential exfil — but see the [threat model](https://gilesknap.github.io/claude-sandbox/explanations/threat-model.html)
 for the honest tally.
 
 ```bash
@@ -334,8 +334,7 @@ approaches and try them**. The goal is to find a gap the 18-check
 matrix doesn't directly exercise — anything that lets the sandbox
 escape its filesystem inversion, recover scrubbed env vars, reach
 the host's network identity, signal/observe processes outside the
-pidns, or otherwise violate the threat model in
-`README-CLAUDE.md`.
+pidns, or otherwise violate the [threat model](https://gilesknap.github.io/claude-sandbox/explanations/threat-model.html).
 
 Constraints on the probes:
 

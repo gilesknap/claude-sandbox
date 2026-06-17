@@ -18,5 +18,5 @@ that boundary.
   browser and WeasyPrint is not a faithful proxy for Chromium auto-layout.
   Open the PR if asked, but wait for the user's explicit OK before merging —
   don't merge on a green build alone.
-- Threat model + sandbox model: `README-CLAUDE.md`
+- Threat model + sandbox model: https://gilesknap.github.io/claude-sandbox/explanations/threat-model.html
 - Sandbox-integrity spec: `.claude/commands/verify-sandbox.md`

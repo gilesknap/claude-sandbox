@@ -303,6 +303,23 @@ parse_config() {
     done < "$conf"
 }
 
+# check_dot_claude_persistence: warn (with keypress gate) when ~/.claude
+# is neither a symlink (link_terminal_config path) nor a direct bind
+# mount. A plain container directory means memory, settings, and OAuth
+# state will be lost on the next devcontainer rebuild.
+check_dot_claude_persistence() {
+    local claude_dir="${HOME:-/root}/.claude"
+    # symlink → link_terminal_config wired it to a host-mounted path
+    [ -L "$claude_dir" ] && return 0
+    # direct bind mount the user set up themselves
+    mountpoint -q "$claude_dir" 2>/dev/null && return 0
+    printf '\n\033[33mWARNING\033[0m: ~/.claude is not host-mounted.\n' >&2
+    printf 'Claude memory, settings, and OAuth state will be lost on devcontainer rebuild.\n' >&2
+    printf 'See https://gilesknap.github.io/claude-sandbox/how-to/persist-login-and-memory.html\n\n' >&2
+    read -rsp "Press any key to continue..." -n 1 _key </dev/tty
+    printf '\n\n' >&2
+}
+
 # Guard: tests source this file with CLAUDE_SHADOW_SOURCE_ONLY=1 so
 # only the function definitions are pulled into scope.
 if [ "$CLAUDE_SHADOW_SOURCE_ONLY" = "1" ]; then
@@ -316,6 +333,8 @@ if [ ! -x "$REAL_CLAUDE" ]; then
     echo "  Re-run \`./install\` from a fresh clone of claude-sandbox." >&2
     exit 1
 fi
+
+check_dot_claude_persistence
 
 # Pre-create forge credential dirs so the argv builder's --bind succeeds
 # on first run. Skipped when CLAUDE_SANDBOX_NO_FORGE=1 since those binds
