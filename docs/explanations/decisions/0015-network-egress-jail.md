@@ -127,10 +127,12 @@ Two structural choices fix scope:
   non-jail sandbox is only the **`CapBnd` ceiling** — `…1ffffffffff` in the jail
   vs `0` non-jail, a nested-userns artifact. Effective caps are zero, so nothing
   is active; route-immutability additionally holds via ancestor-userns ownership.
-  Residual diligence (not a blocker): confirm the higher `CapBnd` ceiling can't be
-  *re-raised* inside Claude's own userns to weaken another bwrap protection (e.g.
-  remounting a `--ro-bind` rw) — locked-mount semantics should prevent it; see
-  `probe-network-jail-caps.sh`.
+  Cap-ceiling diligence — **verified 2026-06-18** (`probe-network-jail-caps.sh`,
+  run unjailed): the higher `CapBnd` ceiling cannot be *re-raised* to weaken
+  another bwrap protection. Even after `unshare -rUm` grants a full *effective*
+  cap set in a child userns, `mount -o remount,rw /`, a bind-mount over a
+  `--ro-bind` path, and `sethostname` all `EPERM` — bwrap's locked mounts are
+  immutable from any descendant userns. The full `CapBnd` is therefore inert.
 - **Hostname allowlists stay out of scope for Cohort B.** Native `allowedDomains`
   cannot express bare-IP/UDP/dynamic-port device traffic; Cohort A / dual-sandbox
   remains issue #33.

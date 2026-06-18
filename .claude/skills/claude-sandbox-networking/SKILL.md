@@ -89,9 +89,11 @@ ANCESTOR userns (caps raised inside Claude's own userns don't reach it): verifie
 route del/punch + device-add all EPERM, RFC1918 stays blocked.
 **verify-sandbox needs NO jail-aware variant** — check 06 asserts `CapEff=0` (not
 CapBnd), which holds; the full 18-check battery passes live in a jailed session.
-Residual diligence (not a blocker): confirm the higher `CapBnd` ceiling can't be
-re-raised inside Claude's userns to weaken another bwrap protection (e.g. remount
-a `--ro-bind` rw) — see `probe-network-jail-caps.sh`.
+Cap-ceiling diligence is **VERIFIED** (`probe-network-jail-caps.sh`, unjailed,
+2026-06-18): the full `CapBnd` ceiling can't be re-raised to weaken another bwrap
+protection. Even with a full *effective* cap set gained via a child `unshare
+-rUm` userns, remount-rw `/`, bind-over a `--ro-bind` path, and `sethostname` all
+`EPERM` — bwrap's locked mounts are immutable from a descendant userns. Inert.
 
 **Structure:** the setup is an inlined `netns_setup()` *inside* `claude-shadow`,
 NOT a sourced module — preserves the single-file auditability ADR 0014 / 0008 rest
@@ -106,11 +108,13 @@ binary both green on a real rootless host: `CLAUDE_SANDBOX_EGRESS_JAIL=1 claude
 `/dev/net/tun` (`devcontainer.json` runArgs `--device=/dev/net/tun`) — the one
 hard container-side dep; fail-closed if pasta/unshare/tun missing. Interactive
 `claude` + `/verify-sandbox` both confirmed live in a jailed session (18/18 pass
-— check 06 asserts `CapEff=0`, which holds). STILL PENDING (see phase-2 plan in
-[[network-egress-pasta-jail-wip]]): cap-ceiling diligence probe; `install.sh`
-`apt-get install passt`; commit the CapEff/CapBnd doc corrections; #56 update +
-branch push/PR. Ceiling: a bwrap *escape* could re-plumb — a layer *beneath* the
-bwrap wall, never stronger. CA broadcast for Claude is gone → unicast
+— check 06 asserts `CapEff=0`, which holds). Phase-2 landed on **PR #58** (refs
+#56): `install.sh` installs `passt`; CapEff/CapBnd doc corrections; cap-ceiling
+diligence probe written + PASSED unjailed (full `CapBnd` inert). STILL PENDING
+(see [[network-egress-pasta-jail-wip]]): run `probe-network-jail.sh` in a
+**bridge/NAT** container — only `--network=host` tested so far, so the
+gateway-collision + nested-pasta paths stay unproven. Ceiling: a bwrap *escape*
+could re-plumb — a layer *beneath* the bwrap wall, never stronger. CA broadcast for Claude is gone → unicast
 `EPICS_CA_ADDR_LIST`.
 
 **Network-mode-agnostic + intentional blackholing.** Design D builds Claude's
