@@ -454,8 +454,11 @@ netns_launch() {
 
     # pasta attaches from OUTSIDE the netns (it needs host connectivity to
     # proxy), configures the default route, and backgrounds itself.
-    if ! pasta --config-net "$holder"; then
-        echo "claude-sandbox: egress jail — pasta failed to attach to the netns" >&2
+    # pasta prints an early IPv6 notice to stderr *before* it opens --log-file,
+    # so flags can't suppress it; redirect stderr to the same log so the terminal
+    # stays clean while early-startup failures are still captured.
+    if ! pasta --config-net --quiet --log-file /tmp/claude-pasta.log "$holder" 2>>/tmp/claude-pasta.log; then
+        echo "claude-sandbox: egress jail — pasta failed to attach to the netns (see /tmp/claude-pasta.log)" >&2
         kill "$holder" 2>/dev/null || true
         exit 1
     fi
