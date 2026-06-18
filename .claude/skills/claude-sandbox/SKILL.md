@@ -7,7 +7,7 @@ description: Architecture decisions and historical reversals for this repo's bwr
 
 Project-specific architecture decisions. The code documents *what*;
 this skill documents *why* and *what regressions to refuse*. Threat
-model: `README-CLAUDE.md`; live verification: `/verify-sandbox`
+model: [threat model](https://gilesknap.github.io/claude-sandbox/explanations/threat-model.html); live verification: `/verify-sandbox`
 (`.claude/commands/verify-sandbox.md`).
 
 ## Invariant 1 — plain `claude` MUST resolve to the shadow
@@ -380,7 +380,7 @@ this.
 | Live verification spec        | `.claude/commands/verify-sandbox.md`                |
 | Global SessionStart verifier  | `.devcontainer/claude-sandbox/sandbox-verify.sh`    |
 | Global UserPromptSubmit gate  | `.devcontainer/claude-sandbox/sandbox-gate.sh`      |
-| Threat model + binds rationale| `README-CLAUDE.md`                                  |
+| Threat model + binds rationale| [sphinx docs](https://gilesknap.github.io/claude-sandbox/explanations/threat-model.html) |
 | Recipes (promote, gh-auth, …) | `justfile` (shipped verbatim by `just promote`)     |
 | Network egress / firewall / lateral-movement design | `claude-sandbox-networking` skill (kept separate so it loads only on network topics) |
 
