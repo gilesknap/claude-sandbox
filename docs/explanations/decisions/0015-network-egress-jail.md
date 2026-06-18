@@ -62,15 +62,25 @@ Channel Access broadcast are untouched. Only the shadow's launch is jailed:
   for — bwrap then aborts on `/proc/<pid>` lookups. A user+net-only holder keeps
   `/proc` valid so bwrap nests cleanly.)
 - `pasta` **attaches from outside** the holder by PID (`pasta --config-net
-  <holder-pid>`; it configures the default route and backgrounds itself). The
-  egress proxy *must* run outside the netns — it needs host connectivity to
-  proxy. No container caps, no host-firewall change.
-- **Routing-as-allowlist** inside the holder's netns: default route → pasta
-  (internet open), `blackhole` for `10/8`, `172.16/12`, `192.168/16`,
-  `unreachable` for `169.254/16`, with **more-specific `allow-ip` host routes**
-  for the device IPs read from `/etc/claude-sandbox.conf`. The holder locks these
-  down **before** handing off to bwrap — ordering (netns created → pasta attached
-  → routes locked → *then* Claude runs) is load-bearing for the boundary.
+  <holder-pid>`; it backgrounds itself). The egress proxy *must* run outside the
+  netns — it needs host connectivity to proxy. No container caps, no host-firewall
+  change. Note `--config-net` **mirrors the host's L3 config** into the netns: the
+  host address, the **connected-subnet route**, the default gateway, and the DNS
+  resolvers from `/etc/resolv.conf`.
+- **Routing-as-allowlist (surgical)** inside the holder's netns. A *blanket*
+  RFC1918 blackhole is wrong: on sites where the resolvers and gateway are
+  themselves RFC1918 (e.g. an all-`172.23/16` lab network) it kills DNS, and
+  pasta's mirrored connected-subnet route is *more specific* than the blackhole,
+  so the whole local subnet stays reachable. Instead the holder: `blackhole`
+  `10/8`, `172.16/12`, `192.168/16` **and the connected subnet**, `unreachable`
+  `169.254/16`; then punches back only — the **gateway** (`/32`, on-link), the
+  **DNS resolvers** (`/32` via gw; resolution is not lateral movement, since
+  connections to internal IPs stay blackholed), and the **`allow-ip` devices**
+  (`/32` via gw) from `/etc/claude-sandbox.conf`. The holder locks these down
+  **before** handing off to bwrap — ordering (netns created → pasta attached →
+  routes locked → *then* Claude runs) is load-bearing for the boundary. The
+  blackholes are fail-closed (a failed one aborts the launch); the device/DNS
+  punches are fail-soft (a missing one is lost reachability, not an open hole).
 - **Security rests on userns ownership, not caplessness.** Claude is *not*
   capless here: because bwrap nests its userns inside the holder's unprivileged
   userns, the new userns grants Claude a **full** capability set (`CapBnd` =

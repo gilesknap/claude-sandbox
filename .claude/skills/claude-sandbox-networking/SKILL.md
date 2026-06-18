@@ -59,11 +59,21 @@ Keep `--network=host` (normal shells + CA broadcast untouched); jail **only
 Claude** via **Design D** (validated 2026-06-18, `probe-network-jail.sh`): the
 shadow creates a user+net ns with `unshare -rn` (a *holder*); **pasta attaches
 from OUTSIDE** by PID (`pasta --config-net <holder-pid>`, backgrounds); the
-holder locks a **routing allowlist** (default → pasta/internet, `blackhole`
-RFC1918 except `allow-ip` device IPs from `/etc/claude-sandbox.conf`); then
+holder locks a **surgical routing allowlist** (see below); then
 `exec bwrap … --cap-drop ALL -- claude`, which **inherits** the holder's netns
 (bwrap keeps OMITTING `--unshare-net`). Ordering is load-bearing: netns → pasta →
 routes locked → Claude.
+
+**SURGICAL policy (v2 — a blanket RFC1918 blackhole is WRONG):** `pasta
+--config-net` mirrors the host L3 config into the netns (address, connected
+subnet, gateway, resolv.conf DNS). On an all-RFC1918 site (Diamond = all
+172.23/16) a blanket blackhole kills DNS, and pasta's connected-subnet route is
+more-specific than the blackhole so the whole local /20 stays reachable. So the
+holder: `blackhole` 10/8 + 172.16/12 + 192.168/16 + the **connected subnet**,
+`unreachable` 169.254/16; then punches back ONLY the **gateway** (/32 on-link),
+**DNS resolvers** (/32 via gw, from /etc/resolv.conf — resolution ≠ lateral
+movement), and **`allow-ip`** devices (/32 via gw). Blackholes fail-closed;
+DNS/device punches fail-soft.
 
 **DEAD ALTERNATIVE — do not retry:** pasta-creates-the-ns + bwrap-nested-inside.
 pasta spawns a pid+mount ns it can't give bwrap a usable `/proc` for → bwrap
@@ -82,15 +92,36 @@ CapBnd=0, when the jail is on).
 NOT a sourced module — preserves the single-file auditability ADR 0014 / 0008 rest
 on. Revisit extraction (its own ADR) only if the net code outgrows the shadow.
 
-**Feasibility — PROVEN unjailed on a real rootless host (2026-06-17):** core
-primitive (unprivileged netns create + in-netns routing, no caps) passes;
-`pasta` builds a tap given `/dev/net/tun`; **live egress passes** — internet
-reachable, non-allowlisted RFC1918 blackholed. Still untested: the Cohort B
-device `allow-ip` path (needs a real device IP). Requires `/dev/net/tun` in the
-container (`devcontainer.json` runArgs `--device=/dev/net/tun`) — the one hard
-container-side dep. Ceiling: a bwrap *escape* could re-plumb — this is a layer
-*beneath* the bwrap wall, never stronger. CA broadcast for Claude itself is gone
-→ unicast `EPICS_CA_ADDR_LIST`.
+**STATUS — IMPLEMENTED + END-TO-END VALIDATED (2026-06-18).** Probe + real
+binary both green on a real rootless host: `CLAUDE_SANDBOX_EGRESS_JAIL=1 claude
+-p` reaches the API through the jail; route-immutability battery passes; Cohort B
+`allow-ip` device path confirmed reachable; same-subnet host blackholed. Lives in
+`claude-shadow` (`parse_config` `egress-jail`/`allow-ip` keys + inlined
+`netns_holder`/`netns_launch`), opt-in via `/etc/claude-sandbox.conf`. Requires
+`/dev/net/tun` (`devcontainer.json` runArgs `--device=/dev/net/tun`) — the one
+hard container-side dep; fail-closed if pasta/unshare/tun missing. STILL PENDING:
+jail-aware `/verify-sandbox`+`sandbox-verify.sh` (CapBnd=0 won't hold when jail
+on); interactive-TUI confirmation of the `<&0` stdin path; `install.sh` could
+`apt-get install passt`. Ceiling: a bwrap *escape* could re-plumb — a layer
+*beneath* the bwrap wall, never stronger. CA broadcast for Claude is gone →
+unicast `EPICS_CA_ADDR_LIST`.
+
+**Network-mode-agnostic + intentional blackholing.** Design D builds Claude's
+netns INSIDE the container and pasta mirrors the container's OWN connectivity, so
+it works whether the container is `--network=host` OR bridge/NAT — same
+requirement (`/dev/net/tun`), one install path, one error message. The jail only
+RESTRICTS; it cannot grant more reach than the container already has (an
+internal/isolated container can't reach a device regardless of the jail). The
+`/dev/net/tun` mount and a possible `--network=host`→bridge switch are BOTH
+host-`devcontainer.json` edits, so `install` must detect + error with
+instructions either way. **Blackholing must be intentional** — CRITICAL in
+non-host containers where the egress gateway is itself RFC1918 (or link-local
+`169.254.x.x`): blackholing those ranges can sever the default route and kill ALL
+egress. `netns_setup()` MUST detect the default next-hop and PIN a more-specific
+route to it FIRST: **protect-gateway → blackhole-the-rest → punch allow-ip.**
+UNPROVEN until probed in a NON-host (bridge) container: (a) nested pasta
+(inner pasta inside an outer-pasta'd container); (b) the gateway-collision
+behaviour. Run `probe-network-jail.sh` in a bridge container, not just host.
 
 ## Refuse / don't re-derive
 
@@ -107,6 +138,16 @@ container-side dep. Ceiling: a bwrap *escape* could re-plumb — this is a layer
 - Asserting Claude is **capless in the jail** — it is NOT (`CapBnd` full, nested
   userns). Security is ancestor-userns ownership of the netns; don't "fix" the
   full caps or gate jail integrity on `CapBnd=0`.
+- **Turning off `--network=host`** (per-container egress allowlist instead of
+  per-process) as the DEFAULT. It IS simpler — `CapBnd=0` preserved, no
+  `/dev/net/tun`, no holder/pasta-attach (root-in-container owns its own netns,
+  locks routes once at init) — but it restricts the **whole** container and
+  breaks EPICS CA/PVA broadcast for **all** shells, not just Claude. Rejected as
+  default for this EPICS org (Design D breaks broadcast for Claude *only*). It's
+  a valid **opt-in posture** for Claude-dedicated / non-EPICS containers, not a
+  silent flip of the host-net default. (Keeping host-net is an EPICS-workflow
+  choice, NOT a mechanism requirement — see portability note: Design D works in
+  non-host containers too.)
 - **Flipping ADR 0005** instead of adding a new layered ADR.
 - Mounting **`docker.sock`** into the Claude container.
 

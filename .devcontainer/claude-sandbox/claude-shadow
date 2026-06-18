@@ -346,27 +346,55 @@ netns_holder() {
         echo "claude-sandbox: egress jail — no default route after pasta attach" >&2
         exit 1
     fi
-    local gw=""
-    read -r _ _ gw _ < <(ip route show default) || true
-    # Routing-as-allowlist: drop any pasta-mirrored LAN routes, blackhole
-    # RFC1918, keep the default route (=> internet via pasta).
-    local n
-    for n in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16; do
-        ip route del "$n" 2>/dev/null || true
+    # pasta --config-net mirrors the host L3 config into the netns (address,
+    # connected subnet, default gateway). Capture it, then apply the SURGICAL
+    # allowlist: blackhole RFC1918 AND the connected subnet, punch back only the
+    # gateway, the DNS resolvers, and the allow-ip devices. A blanket RFC1918
+    # blackhole would kill DNS on sites where the resolvers/gateway are
+    # themselves RFC1918, and the mirrored connected-subnet route (more specific
+    # than the blackhole) would otherwise leave the whole local subnet reachable.
+    # See ADR 0015 (validated by probe-network-jail.sh).
+    local def gw nic subnet
+    def="$(ip route show default 2>/dev/null | head -n1)"
+    gw="$(awk '{for(i=1;i<NF;i++)if($i=="via")print $(i+1)}' <<< "$def")"
+    nic="$(awk '{for(i=1;i<NF;i++)if($i=="dev")print $(i+1)}' <<< "$def")"
+    if [ -z "$gw" ] || [ -z "$nic" ]; then
+        echo "claude-sandbox: egress jail — no default route via/dev after pasta attach" >&2
+        exit 1
+    fi
+    subnet="$(ip -o route show dev "$nic" scope link 2>/dev/null | awk 'NR==1{print $1}' || true)"
+    local -a dns=()
+    mapfile -t dns < <(awk '/^[[:space:]]*nameserver/{print $2}' /etc/resolv.conf 2>/dev/null)
+
+    # Gateway reachable on-link first, then blackhole everything internal
+    # (fail-closed: a failed blackhole aborts the holder via set -e, so Claude
+    # never starts with RFC1918 reachable), then re-punch the allowed routes.
+    ip route replace "$gw/32" dev "$nic"
+    [ -n "$subnet" ] && ip route replace blackhole "$subnet"
+    ip route replace blackhole   10.0.0.0/8
+    ip route replace blackhole   172.16.0.0/12
+    ip route replace blackhole   192.168.0.0/16
+    ip route replace unreachable 169.254.0.0/16
+    ip route replace default via "$gw" dev "$nic"
+
+    # DNS resolvers — needed for the tool to function; resolution is not lateral
+    # movement (connections to internal IPs stay blackholed). Fail-soft.
+    local ns
+    for ns in "${dns[@]}"; do
+        [ -n "$ns" ] || continue
+        case "$ns" in 127.*|::1|"$gw") continue;; esac
+        ip route replace "$ns/32" via "$gw" 2>/dev/null \
+            || echo "claude-sandbox: egress jail — could not route DNS resolver $ns" >&2
     done
-    ip route add blackhole   10.0.0.0/8
-    ip route add blackhole   172.16.0.0/12
-    ip route add blackhole   192.168.0.0/16
-    ip route add unreachable 169.254.0.0/16
-    # Punch host routes for the configured device IPs (EPICS IOC / PMAC). A
-    # failed device route is a reachability loss, not a security hole (the
-    # blackhole still holds), so it warns rather than aborting.
-    if [ -n "${CLAUDE_SANDBOX_ALLOW_IP:-}" ] && [ -n "$gw" ]; then
-        local dev
-        while IFS= read -r dev; do
-            if [ -z "$dev" ]; then continue; fi
-            ip route add "${dev%/*}/32" via "$gw" 2>/dev/null \
-                || echo "claude-sandbox: egress jail — could not route allow-ip $dev" >&2
+
+    # allow-ip devices (EPICS IOC / PMAC). Fail-soft: a missing device route is a
+    # reachability loss, not a security hole (the blackhole still holds).
+    if [ -n "${CLAUDE_SANDBOX_ALLOW_IP:-}" ]; then
+        local aip
+        while IFS= read -r aip; do
+            [ -n "$aip" ] || continue
+            ip route replace "${aip%/*}/32" via "$gw" 2>/dev/null \
+                || echo "claude-sandbox: egress jail — could not route allow-ip $aip" >&2
         done <<< "$CLAUDE_SANDBOX_ALLOW_IP"
     fi
     exec "$@"
