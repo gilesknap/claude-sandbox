@@ -38,6 +38,28 @@ jailed; `=0` restores 0005's world. Don't describe egress as "open by default"
 anymore, and don't re-add an "opt-in / off by default" framing — that was the
 pre-2026-06-18 state.
 
+## Stub-resolver DNS — pasta `--dns-forward` (issue #60, fixed)
+
+The per-resolver `/32` punch ONLY works when `/etc/resolv.conf` resolvers are
+**routable**. On a personal Ubuntu desktop the sole resolver is a **loopback
+stub** — `127.0.0.53` (systemd-resolved) or Tailscale MagicDNS — which lives in
+the **host** netns and answers nothing inside the jail, so every lookup is
+`ECONNREFUSED` and the API reads as down ("works at the office, fails at home").
+FIX (shipped, ADR 0015 updated): pasta attaches with `--dns-forward 192.0.2.53`
+(RFC5737 TEST-NET — non-routable, outside every blackhole) → it listens on that
+addr *inside* the netns and relays DNS to the host's real resolvers (pasta is in
+the host netns, so it reaches `127.0.0.53`). When `claude-shadow`'s
+`jail_stage_dns()` sees an all-loopback resolv.conf it binds a one-line
+`nameserver 192.0.2.53` over Claude's `/etc/resolv.conf` (gated env
+`CLAUDE_SANDBOX_JAIL_RESOLV`, applied in `bwrap_argv_build`) and the holder
+routes that `/32` via gw. Routable-resolver hosts are byte-for-byte unchanged
+(forwarder staged but unused). **Don't** "fix" stub DNS by punching loopback
+`/32`s (can't route loopback) or by recovering upstreams from
+`/run/systemd/resolve/resolv.conf` (the rejected fallback — fails for Tailscale
+MagicDNS, whose `100.100.100.100` is served locally by tailscaled, not
+routable). `probe-network-jail.sh` mirrors the forwarder path; this dogfood box
+(`127.0.0.53` + Tailscale) is exactly the affected config.
+
 ## Runtime target — rootless Podman (NOT Docker-bridge)
 
 v1 targets **rootless Podman** + Debian/Ubuntu + `remoteUser=root` (rootless

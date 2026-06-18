@@ -35,7 +35,8 @@ source "$SHADOW"
 # explicitly in their own subshell, so clearing them here is safe.
 unset VIRTUAL_ENV UV_PROJECT_ENVIRONMENT UV_CACHE_DIR UV_PYTHON_CACHE_DIR \
       PRE_COMMIT_HOME CLAUDE_SANDBOX_WORKSPACE_ROOT CLAUDE_SANDBOX_NO_FORGE \
-      CLAUDE_SANDBOX_ALLOW_WRITE CLAUDE_SANDBOX_EGRESS_JAIL CLAUDE_SANDBOX_ALLOW_IP
+      CLAUDE_SANDBOX_ALLOW_WRITE CLAUDE_SANDBOX_EGRESS_JAIL CLAUDE_SANDBOX_ALLOW_IP \
+      CLAUDE_SANDBOX_JAIL_RESOLV
 
 PASSED=0
 FAILED=0
@@ -456,6 +457,68 @@ assert_parse scenario11-absent bash -c "
     parse_config '/nonexistent/claude-sandbox.conf'
     [ -z \"\${CLAUDE_SANDBOX_WORKSPACE_ROOT:-}\" ]
 "
+
+# --- Scenario 12: egress-jail DNS override bind (issue #60) ---
+# bwrap_argv_build binds a forwarder-pointed resolv.conf over /etc/resolv.conf
+# only when CLAUDE_SANDBOX_JAIL_RESOLV names a readable file (the stub-resolver
+# path). Absent / missing-file => no override, argv unchanged.
+RESOLV_OVERRIDE="$(mktemp)"
+printf 'nameserver 192.0.2.53\n' > "$RESOLV_OVERRIDE"
+ARGV12="$(HOME=/root CLAUDE_SANDBOX_GITCONFIG_PATH=/etc/claude-gitconfig \
+    CLAUDE_SANDBOX_JAIL_RESOLV="$RESOLV_OVERRIDE" \
+    bwrap_argv_build /workspaces/foo /test/.local/bin/claude)"
+assert_pair scenario12-resolv-bind "$ARGV12" "--ro-bind" "$RESOLV_OVERRIDE"
+assert_contains scenario12-resolv-dest "$ARGV12" "/etc/resolv.conf"
+# Default scenario (env unset) must NOT bind /etc/resolv.conf.
+assert_not_contains scenario12-default-no-bind "$ARGV1" "/etc/resolv.conf"
+# A non-readable path is ignored (no bind, no crash).
+ARGV12b="$(HOME=/root CLAUDE_SANDBOX_GITCONFIG_PATH=/etc/claude-gitconfig \
+    CLAUDE_SANDBOX_JAIL_RESOLV="/nonexistent/resolv.conf" \
+    bwrap_argv_build /workspaces/foo /test/.local/bin/claude)"
+assert_not_contains scenario12-missing-no-bind "$ARGV12b" "/etc/resolv.conf"
+rm -f "$RESOLV_OVERRIDE"
+
+# --- Scenario 13: jail_stage_dns resolver detection (issue #60) ---
+# Drives jail_stage_dns against a fixture resolv.conf via a RESOLV_CONF-aware
+# wrapper. Routable resolver => no override; loopback-only / empty => override
+# pointing Claude at the pasta forwarder.
+FAKE_RESOLV="$(mktemp)"
+stage_dns_with() {
+    # Re-source the shadow per case so a fresh CLAUDE_SANDBOX_JAIL_RESOLV is
+    # exported, then run jail_stage_dns reading $FAKE_RESOLV in place of /etc.
+    bash -c "
+        source \"$SHADOW\"
+        unset CLAUDE_SANDBOX_JAIL_RESOLV
+        jail_stage_dns_test() { sed 's#/etc/resolv.conf#$FAKE_RESOLV#' <<< \"\$(declare -f jail_stage_dns)\"; }
+        eval \"\$(jail_stage_dns_test)\"
+        jail_stage_dns 2>/dev/null
+        if [ -n \"\${CLAUDE_SANDBOX_JAIL_RESOLV:-}\" ]; then
+            printf 'OVERRIDE:'; cat \"\$CLAUDE_SANDBOX_JAIL_RESOLV\"
+            rm -f \"\$CLAUDE_SANDBOX_JAIL_RESOLV\"
+        else
+            printf 'NONE\n'
+        fi
+    "
+}
+
+# Routable resolver present => keep host resolv.conf (NONE).
+printf 'nameserver 8.8.8.8\n' > "$FAKE_RESOLV"
+assert_eq scenario13-routable "NONE" "$(stage_dns_with | tr -d '\n')"
+
+# Loopback-only (systemd-resolved stub) => forwarder override.
+printf 'nameserver 127.0.0.53\n' > "$FAKE_RESOLV"
+assert_eq scenario13-stub "OVERRIDE:nameserver 192.0.2.53" \
+    "$(stage_dns_with | tr -d '\n')"
+
+# Mixed loopback + routable => routable wins, NONE.
+printf 'nameserver 127.0.0.53\nnameserver 192.168.1.1\n' > "$FAKE_RESOLV"
+assert_eq scenario13-mixed "NONE" "$(stage_dns_with | tr -d '\n')"
+
+# Empty resolv.conf => forwarder override (best-effort, with a warning).
+printf '' > "$FAKE_RESOLV"
+assert_eq scenario13-empty "OVERRIDE:nameserver 192.0.2.53" \
+    "$(stage_dns_with | tr -d '\n')"
+rm -f "$FAKE_RESOLV"
 
 echo "bwrap_argv.sh: $PASSED passed / $FAILED failed"
 [ "$FAILED" -eq 0 ]
