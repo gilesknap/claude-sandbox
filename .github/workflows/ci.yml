@@ -55,3 +55,42 @@ jobs:
           export HOME=/tmp/sandbox-home
           mkdir -p "$HOME/.claude" "$HOME/.cache"
           CLAUDE_SANDBOX_SMOKE=1 sudo -E bash tests/smoke.sh
+
+      - name: Run promote test
+        run: |
+          export HOME=/tmp/sandbox-home
+          mkdir -p "$HOME/.claude" "$HOME/.cache"
+          CLAUDE_SANDBOX_SMOKE=1 bash tests/promote.sh
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends shellcheck
+
+      - name: shellcheck
+        run: |
+          # Every tracked bash script (by .sh/.bash suffix or shebang), minus
+          # the docs/ Python toolchain and build artefacts.
+          mapfile -t files < <(
+            git ls-files ':!:docs/**' ':!:build/**' | while read -r f; do
+              case "$f" in
+                *.sh|*.bash) printf '%s\n' "$f" ;;
+                *) [ -f "$f" ] && head -1 "$f" | grep -qE '^#!.*\b(ba)?sh\b' \
+                     && printf '%s\n' "$f" ;;
+              esac
+            done
+          )
+          printf 'Linting %d scripts:\n' "${#files[@]}"
+          printf '  %s\n' "${files[@]}"
+          # Blocking gate: error severity only — real bugs (parse errors, etc.).
+          # The scripts pass `bash -n`, so this is expected to stay green.
+          shellcheck --severity=error "${files[@]}"
+          # Advisory: surface warning/info findings without gating, so severity
+          # can be ratcheted up over time. (shfmt is a deferred follow-up.)
+          shellcheck "${files[@]}" \
+            || echo "::warning::shellcheck reported advisory (warning/info) findings"
