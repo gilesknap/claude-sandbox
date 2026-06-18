@@ -4,7 +4,7 @@ This page explains *why* several of the sandbox's more subtle binds and
 masks are shaped the way they are. It assumes you already know the
 shape of the sandbox from the [threat model](threat-model.md) and the
 list of [deliberately-exposed paths](../reference/deliberately-exposed.md);
-here we cover the reasoning behind five decisions where the obvious
+here we cover the reasoning behind six decisions where the obvious
 implementation would have been wrong or leaky.
 
 The baseline is *strict-under-`$HOME` by inversion*: the shadow emits
@@ -104,22 +104,35 @@ under strict-under-`$HOME`, so nothing reaches it in the first place.
 
 ## Network-identity disclosure
 
-The sandbox shares the host's network namespace (`--share-net`; the
-netns is *not* unshared) because Claude needs to reach
-`api.anthropic.com` and the forges. A consequence of the shared netns
-is that Claude can enumerate the host's interface addresses, routing
-table, and DNS resolver — via `AF_NETLINK` or ordinary tooling such as
-`ip addr`, `ip route`, and reading `/etc/resolv.conf`.
+By default — the egress jail, {ref}`adr-network-egress-jail` — Claude runs
+in a *private* network namespace bridged to the internet by `pasta`, with a
+routing allowlist that blackholes RFC1918 and the connected subnet. In that
+namespace Claude sees only the pasta-mirrored address, gateway, and DNS
+resolver, not the host's full interface and routing view.
 
-This is **network-identity disclosure, not credential exfiltration**.
-Nothing secret is leaked by it directly. But it does mean the sandbox
-is visible to internal services on the same host network, and can
-reach them. The practical caveat: do not run a local
-metadata-style credential service on the loopback or RFC1918 address
-of a host that also runs `claude`, unless you are comfortable with
-Claude being able to reach it. `/verify-sandbox` surfaces this as an
-`[INCONCLUSIVE]` adversarial probe so it stays on the radar rather
-than being silently forgotten.
+Host network-identity disclosure applies to the **escape-hatch path**
+(`CLAUDE_SANDBOX_EGRESS_JAIL=0`). On that path bwrap omits `--unshare-net`
+and inherits the container's host network namespace — the netns is *not*
+unshared — so Claude can enumerate the host's interface addresses, routing
+table, and DNS resolver via `AF_NETLINK` or ordinary tooling such as
+`ip addr`, `ip route`, and reading `/etc/resolv.conf`. (Even on the default
+jailed path, `pasta` mirrors the host address, gateway, and DNS resolvers
+into the netns, so those resolver and gateway addresses remain visible —
+but the host's *full* network identity does not.)
+
+This is **network-identity disclosure, not credential exfiltration**, and
+it applies only when the egress jail is disabled
+(`CLAUDE_SANDBOX_EGRESS_JAIL=0`). Nothing secret is leaked by it directly.
+On the `=0` path it does mean the sandbox is visible to internal services on
+the same host network, and can reach them. The practical caveat (for `=0`
+only): do not run a local metadata-style credential service on the loopback
+or RFC1918 address of a host that also runs an unjailed `claude`, unless you
+are comfortable with Claude being able to reach it. With the jail on (the
+default), RFC1918 and the connected subnet are blackholed, so Claude cannot
+reach a loopback or RFC1918 metadata-style credential service in the first
+place — closing exactly this reach is its whole point. `/verify-sandbox`
+surfaces the reachability question as an `[INCONCLUSIVE]` adversarial probe
+so it stays on the radar rather than being silently forgotten.
 
 ## The procfs view: host PIDs are visible
 
@@ -149,3 +162,52 @@ with VS Code, the terminal sessions, or other devcontainer processes,
 so those reads return `EACCES`. The visibility of PIDs does not extend
 to the contents that would matter, and check 07 still passes because
 the kernel PID-namespace isolation is intact regardless.
+
+## Egress-jail mechanism: holder netns + pasta-attach
+
+The egress jail ({ref}`adr-network-egress-jail`) is on by default and is
+driven by three functions that live inline in the shadow. `egress_jail_enabled`
+is the one-line gate (anything but `CLAUDE_SANDBOX_EGRESS_JAIL=0`, including
+the `egress-jail` key in `/etc/claude-sandbox.conf`, means on; the env var
+wins). `netns_launch` orchestrates the launch: it runs inside `unshare -rn`
+(a short-lived **holder** that owns a fresh user+net namespace), waits for the
+holder's `/proc/<pid>/ns/net` to appear, then runs `pasta --config-net` against
+the holder PID from *outside* the namespace — pasta needs host connectivity to
+proxy — and backgrounds it. `netns_holder` runs *inside* the namespace: it
+brings up `lo`, waits for the readiness signal, then locks the surgical routing
+allowlist before exec'ing the bwrap'd Claude.
+
+The allowlist blackholes `10/8`, `172.16/12`, `192.168/16`, the connected
+subnet, and `169.254/16`, then punches back only the gateway, the DNS
+resolvers, and the `allow-ip` devices (configured via the repeatable `allow-ip`
+key or `CLAUDE_SANDBOX_ALLOW_IP`). Internet, DNS, and the allow-ip devices stay
+reachable; everything sideways into RFC1918 and link-local does not. The
+ordering is load-bearing: netns -> pasta attach -> routes locked -> Claude.
+
+Why the holder creates the namespace and not bwrap: the container has no
+`CAP_NET_ADMIN` to make a netns without a userns, and bwrap keeps *omitting*
+`--unshare-net` so it inherits the holder's namespace. The security boundary is
+**ancestor-userns ownership, not caplessness**. Inside the jail Claude is *not*
+capless — bwrap nests its userns inside the holder's, so Claude has a full
+`CapBnd` ceiling (a nested-userns artifact) — but `CapEff` is still 0 because
+bwrap runs `--cap-drop ALL`. What contains it is that the netns and its routes
+are owned by the holder's *ancestor* userns: route del/punch and device-add all
+return `EPERM` from inside. Because `CapEff=0` holds either way, check 06's
+assertion is unchanged, so the full `/verify-sandbox` battery passes in a jailed
+session with no jail-aware variant required.
+
+The jail is **fail-closed**: if `/dev/net/tun` (the `--device=/dev/net/tun`
+runArg in `devcontainer.json`), `pasta` (apt package `passt`), or `unshare` is
+missing, the shadow refuses to launch — naming the fix and the
+`CLAUDE_SANDBOX_EGRESS_JAIL=0` escape hatch — rather than falling back to open
+egress. Setting `=0` restores the shared-host-netns world of
+{ref}`adr-network-egress-open`.
+
+A consequence is that EPICS Channel Access *broadcast* for Claude is gone — a
+private netns has no LAN broadcast — so Claude must use a unicast
+`EPICS_CA_ADDR_LIST` to the device's `allow-ip`. Normal (non-Claude) shells in
+the container keep host networking and broadcast, since the container itself
+stays `--network=host`. The wider rationale — lateral-movement containment, and
+how this layer meshes with Claude Code's native domain isolation — lives in
+[the egress jail and the native
+sandbox](threat-model.md#the-egress-jail-and-the-native-sandbox).

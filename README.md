@@ -36,22 +36,27 @@ devcontainers and how to confirm the install with `/verify-sandbox`.
 - A shadow `claude` that wraps the real binary in `bwrap` (`--ro-bind / /`,
   `--tmpfs $HOME`, `--clearenv`, `--cap-drop ALL`, PID/IPC/UTS namespaces,
   TIOCSTI defence) so host credentials and IDE bridges are unreachable.
+- A per-process **egress jail** (ADR 0015, on by default) that runs Claude in
+  its own network namespace and blackholes RFC1918 (internal LANs, lab devices)
+  while leaving the internet, DNS, and configured `allow-ip` devices reachable —
+  so a compromised session can't pivot sideways to internal hosts. Fail-closed
+  (needs `--device=/dev/net/tun`); `CLAUDE_SANDBOX_EGRESS_JAIL=0` opts out.
 - A global, tamper-resistant **integrity guard** (highest-precedence
   managed-settings hooks + a disabled auto-updater) that fails loud and closed
   if Claude is ever launched outside the shadow.
 - **Refusal-on-failure**: if the host can't run unprivileged user namespaces the
   installer refuses, rather than install a sandbox that isn't one.
 
-How and why it works: the [architecture overview][arch] and the
-[threat model][threat].
+How and why it works: the [architecture overview][arch], the
+[threat model][threat], and the [network egress jail decision (ADR 0015)][jail].
 
 ## Documentation
 
 | | |
 |---|---|
 | [Tutorial][tutorial] | Get to a working, verified sandbox. |
-| [How-to guides][howto] | Verify, authenticate forges, configure workspace scope, promote, upgrade. |
-| [Reference][reference] | Locked-down defences, the verification checks, config keys, deliberate exposures. |
+| [How-to guides][howto] | Verify, authenticate forges, configure workspace scope, configure the egress jail, promote, upgrade. |
+| [Reference][reference] | Locked-down defences, the egress jail, the verification checks, config keys, deliberate exposures. |
 | [Explanations][explain] | Threat model, architecture, the integrity guard, sandbox internals. |
 
 ## Development
@@ -78,4 +83,5 @@ See [`LICENSE`](./LICENSE).
 [explain]: https://gilesknap.github.io/claude-sandbox/explanations.html
 [arch]: https://gilesknap.github.io/claude-sandbox/explanations/architecture.html
 [threat]: https://gilesknap.github.io/claude-sandbox/explanations/threat-model.html
+[jail]: https://gilesknap.github.io/claude-sandbox/explanations/decisions/0015-network-egress-jail.html
 [contribute]: https://gilesknap.github.io/claude-sandbox/how-to/contribute.html

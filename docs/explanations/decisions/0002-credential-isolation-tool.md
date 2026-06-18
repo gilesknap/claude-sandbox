@@ -27,8 +27,11 @@ Enforcement targets *accidental* and *LLM-driven* exposure, not a determined
 human who already controls the host. Explicitly out of scope: a bwrap-aware
 kernel exploit; the workspace contents themselves (Claude must read them to do
 its job — keep secrets out of the workspace); non-standard credential mounts the
-user adds; non-root devcontainers (tracked for v2). Network egress filtering is
-also out of scope and gets its own record — see {ref}`adr-network-egress-open`.
+user adds; non-root devcontainers (tracked for v2). Internet-domain / exfil
+filtering is out of scope and gets its own record — see
+{ref}`adr-network-egress-open`. Lateral network isolation (blackholing RFC1918
+so a compromised session cannot pivot to internal hosts) was later brought
+*into* scope as a layer around the tool — see {ref}`adr-network-egress-jail`.
 
 ## Consequences
 

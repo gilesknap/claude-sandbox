@@ -25,16 +25,36 @@ exfiltration path closed by the matching primitive.
 | `.Xauthority` defence in depth | `--bind-try /dev/null /root/.Xauthority` | check 15 |
 | Curated gitconfig in effect | `GIT_CONFIG_GLOBAL=/etc/claude-gitconfig`, `GIT_CONFIG_SYSTEM=/dev/null` | check 16 |
 | Chrome browser-extension RPC channel disabled | shadow injects `--no-chrome` and strips user `--chrome` so Claude Code never writes its `NativeMessagingHosts` manifest | check 03 (regression manifests as browser dirs under `~/.config`) |
+| Lateral-movement (RFC1918) egress isolation | netns + `pasta` routing allowlist around bwrap (NOT a bwrap primitive — {ref}`ADR 0015 <adr-network-egress-jail>`); blackholes 10/8, 172.16/12, 192.168/16, 169.254/16 | no jail-aware check needed — check 06 (`CapEff=0`) still passes in the nested userns; an optional netns/blackhole check is a future item |
 
 ## Notes
 
-### Network egress is open
+### Network egress is jailed by default
 
-Network egress (`--share-net`, NOT unshared) is deliberately open so
-Claude can reach `api.anthropic.com`. There is no PASS/FAIL check for
-it — any regression makes Claude fail on first use rather than
-silently. The shared netns is also why the host's network identity is
-disclosable from inside; see the
+As of 2026-06-18 the egress jail ({ref}`adr-network-egress-jail`) is the
+default posture: Claude runs in its own per-process network namespace,
+bridged to the internet by `pasta`, with a routing allowlist that
+blackholes RFC1918 (`10/8`, `172.16/12`, `192.168/16`, the connected
+subnet) and link-local (`169.254/16`) so a compromised session cannot
+pivot to internal hosts or lab devices. `api.anthropic.com`,
+GitHub/GitLab, DNS resolvers, and any configured `allow-ip` devices stay
+reachable so Claude still works.
+
+It is **fail-closed** — if `/dev/net/tun`, `pasta`, or `unshare` is
+missing, `claude` refuses to launch rather than silently dropping back to
+open egress. The escape hatch is `CLAUDE_SANDBOX_EGRESS_JAIL=0` (env, per
+session, or `egress-jail = 0` in `/etc/claude-sandbox.conf`; env wins),
+which restores the older shared-host-netns world (`--share-net`, NOT
+unshared; {ref}`adr-network-egress-open`). Only that `=0` path shares the
+host netns, which is what makes the host's network identity disclosable
+from inside.
+
+The jail sits *around* bwrap, so [`/verify-sandbox`](verification-checks.md)
+passes unchanged inside it — check 06 asserts `CapEff=0` (the effective
+set, empty even in the jail's nested userns), not netns state. There is
+therefore no PASS/FAIL check for the jail itself (a netns/blackhole check
+is a future item); any egress regression makes Claude fail on first use
+rather than silently. See the
 [threat model](../explanations/threat-model.md).
 
 ### `--die-with-parent`

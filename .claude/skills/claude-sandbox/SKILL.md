@@ -382,5 +382,6 @@ this.
 | Global UserPromptSubmit gate  | `.devcontainer/claude-sandbox/sandbox-gate.sh`      |
 | Threat model + binds rationale| [sphinx docs](https://gilesknap.github.io/claude-sandbox/explanations/threat-model.html) |
 | Recipes (promote, gh-auth, …) | `justfile` (shipped verbatim by `just promote`)     |
+| Network egress / firewall / lateral-movement design | `claude-sandbox-networking` skill (kept separate so it loads only on network topics) |
 
 Touching any of these → re-read this skill first.

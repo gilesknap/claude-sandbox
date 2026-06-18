@@ -1,0 +1,188 @@
+(adr-network-egress-jail)=
+
+# 15. Jail Claude's egress in a per-process netns with a routing allowlist
+
+Date: 2026-06-17
+
+## Status
+
+Accepted
+
+Layers on top of {ref}`adr-network-egress-open` (ADR 5) — same
+mechanism-beneath-bwrap relationship — but **as of 2026-06-18 the jail is the
+default**. That overrides ADR 5's *open-egress default* (not its reasoning:
+`CLAUDE_SANDBOX_EGRESS_JAIL=0` restores the open path, and filtering still lives
+around the tool, not inside it). ADR 5 carries a pointer here.
+
+## Context
+
+ADR 5 left network egress open and said so deliberately: filtering "belongs at
+the devcontainer boundary," and a future "add network sandboxing" would be *"a
+layered addition on top of credential isolation — record it as its own ADR if
+adopted; it does not reverse this decision."* This is that ADR.
+
+The threat is **lateral movement, not exfil** (issue #31, folded into #56). bwrap
+already hides credentials and the code is OSS; the asset worth protecting is
+*network reach*. A compromised or prompt-injected session sharing the host
+network namespace can probe RFC1918, hit internal HTTP and `169.254.169.254`,
+and — the incident that motivates this — reach **lab devices with default creds**
+(EPICS IOCs, PMAC). A PMAC reached by a hostile session is a *safety* incident,
+not just an information one.
+
+Two user cohorts need different controls:
+
+- **Cohort A** — HTTPS to *named* hosts. Claude Code's native sandbox
+  (`allowedDomains` / an SNI proxy) fits this; that is issue #33's scope.
+- **Cohort B (this repo's users)** — lab devices addressed by **bare RFC1918 IP,
+  over UDP, on dynamic ports** (EPICS CA/PVA, PMAC). A hostname allowlist
+  *cannot express this*. Cohort B needs IP/CIDR-level control.
+
+The runtime target is **rootless Podman** (pasta is the Podman 5+ default
+outbound path). Consequences that rule out Docker-shaped designs: no host
+`DOCKER-USER`/iptables knob for the unprivileged user, userspace outbound only,
+and no `CAP_NET_ADMIN` on the container. So the control cannot be a host firewall
+or a container capability — it has to be built from primitives an unprivileged
+user already has.
+
+Feasibility was probed **unjailed on a real rootless host** (the sandboxed
+session reports `CapBnd=0`, a false "impossible" reading — see
+{ref}`adr-untrusted-workspace`): unprivileged netns create + in-netns routing
+with no caps **passes**, `pasta` builds a tap given `/dev/net/tun` **passes**, and
+live egress through pasta — internet reachable, non-allowlisted RFC1918
+blackholed — **passes**.
+
+## Decision
+
+Add an egress jail **beneath the bwrap wall**, scoped to Claude alone. The
+container keeps `--network=host`, so ordinary (non-Claude) shells and EPICS
+Channel Access broadcast are untouched. Only the shadow's launch is jailed:
+
+- `claude-shadow` creates a **user + network namespace** with `unshare -rn`
+  (a short-lived *holder*) and bwrap **inherits** it — bwrap keeps omitting
+  `--unshare-net`; it only nests its own userns inside the holder's. (The holder
+  must create the netns, not bwrap and not pasta: the container has no
+  `CAP_NET_ADMIN` to make a netns without a userns, and if *pasta* creates the
+  namespaces it also makes a pid+mount ns it can't give bwrap a usable `/proc`
+  for — bwrap then aborts on `/proc/<pid>` lookups. A user+net-only holder keeps
+  `/proc` valid so bwrap nests cleanly.)
+- `pasta` **attaches from outside** the holder by PID (`pasta --config-net
+  <holder-pid>`; it backgrounds itself). The egress proxy *must* run outside the
+  netns — it needs host connectivity to proxy. No container caps, no host-firewall
+  change. Note `--config-net` **mirrors the host's L3 config** into the netns: the
+  host address, the **connected-subnet route**, the default gateway, and the DNS
+  resolvers from `/etc/resolv.conf`.
+- **Routing-as-allowlist (surgical)** inside the holder's netns. A *blanket*
+  RFC1918 blackhole is wrong: on sites where the resolvers and gateway are
+  themselves RFC1918 (e.g. an all-`172.23/16` lab network) it kills DNS, and
+  pasta's mirrored connected-subnet route is *more specific* than the blackhole,
+  so the whole local subnet stays reachable. Instead the holder: `blackhole`
+  `10/8`, `172.16/12`, `192.168/16` **and the connected subnet**, `unreachable`
+  `169.254/16`; then punches back only — the **gateway** (`/32`, on-link), the
+  **DNS resolvers** (`/32` via gw; resolution is not lateral movement, since
+  connections to internal IPs stay blackholed), and the **`allow-ip` devices**
+  (`/32` via gw) from `/etc/claude-sandbox.conf`. The holder locks these down
+  **before** handing off to bwrap — ordering (netns created → pasta attached →
+  routes locked → *then* Claude runs) is load-bearing for the boundary. The
+  blackholes are fail-closed (a failed one aborts the launch); the device/DNS
+  punches are fail-soft (a missing one is lost reachability, not an open hole).
+- **Security rests on userns ownership, not caplessness.** Claude is *not*
+  capless here: because bwrap nests its userns inside the holder's unprivileged
+  userns, the new userns grants Claude a **full** capability set (`CapBnd` =
+  `…1ffffffffff`). That is expected and unavoidable. What contains it: the netns
+  and its routes are owned by the **holder's** userns — an *ancestor* of Claude's
+  — so Claude's caps confer no authority over them. Verified directly: from inside
+  the jail, deleting a blackhole route, punching a route past it, and creating a
+  net device all fail `EPERM`, and RFC1918 stays blocked after the attempts.
+
+**On by default, fail-closed, with an escape hatch.** The jail runs unless
+`CLAUDE_SANDBOX_EGRESS_JAIL=0` (env, per session) or `egress-jail = 0`
+(`/etc/claude-sandbox.conf`, per host) disables it. If the jail is on but a
+prerequisite is missing (`/dev/net/tun`, pasta, unshare), the launch **fails
+closed** — `claude` refuses to start rather than silently dropping back to open
+egress — and the error names both the fix and the `=0` escape hatch. This is the
+secure-by-default choice for the lab threat (a misconfigured host can't quietly
+lose the control); the escape hatch keeps a non-EPICS or deliberately-open host
+unblocked.
+
+Two structural choices fix scope:
+
+- **Bash, inlined in the shadow.** The setup is implemented as inlined functions
+  (`netns_launch()` orchestrating, `netns_holder()` running inside `unshare -rn`,
+  plus an `egress_jail_enabled` predicate) *inside* `claude-shadow`, not a sourced
+  module — preserving the
+  single-file, read-top-to-bottom auditability that {ref}`adr-bash-only` and
+  {ref}`adr-integrity-surfaces` rest on. netns + routing + pasta *is* shell
+  orchestration of CLI tools; the literal `ip route add blackhole …` commands are
+  the most auditable representation of the boundary, so no higher-level language
+  is warranted. (Trigger to revisit extraction into its own file — its own ADR —
+  is if the net code outgrows the shadow's readability.)
+- **Allowlist lives in `/etc`, not the workspace.** `allow-ip` entries come from
+  `/etc/claude-sandbox.conf`, outside the sandbox's rw set, per
+  {ref}`adr-untrusted-workspace`. A per-workspace allowlist would be
+  attacker-writable from inside the jail.
+
+## Consequences
+
+- **Defence in depth, not a stronger wall.** This layer sits *beneath* bwrap: a
+  bwrap *escape* could re-plumb the netns. It raises the cost of lateral movement
+  for a contained session; it is never stronger than the bwrap boundary above it.
+- **Channel Access broadcast for Claude is gone.** Claude's private netns has no
+  LAN broadcast domain, so CA auto-discovery won't work *for Claude* — it must use
+  unicast `EPICS_CA_ADDR_LIST`. Normal shells keep host networking and broadcast.
+- **Requires `/dev/net/tun` in the container** (`devcontainer.json` runArgs
+  `--device=/dev/net/tun`); pasta and slirp4netns are both TAP-based and neither
+  works without it. This is the one hard container-side requirement.
+- **`HTTPS_PROXY`-style env proxy is explicitly not the mechanism** (issue #31
+  Option D): a hostile process unsets the env var or opens a raw socket. The
+  control is enforced by ancestor-owned netns + kernel routing, not by environment.
+- **Integrity checks still pass in the jail — no jail-aware variant needed.**
+  `/verify-sandbox` check 06 (and `sandbox-verify.sh`) assert **`CapEff=0`** (the
+  *effective* set), not `CapBnd`. bwrap's `--cap-drop ALL` empties the effective
+  set even inside the nested userns, so `CapEff=0` holds and the full 18-check
+  battery passes in a jailed session (verified live). What differs from the
+  non-jail sandbox is only the **`CapBnd` ceiling** — `…1ffffffffff` in the jail
+  vs `0` non-jail, a nested-userns artifact. Effective caps are zero, so nothing
+  is active; route-immutability additionally holds via ancestor-userns ownership.
+  Cap-ceiling diligence — **verified 2026-06-18** (`probe-network-jail-caps.sh`,
+  run unjailed): the higher `CapBnd` ceiling cannot be *re-raised* to weaken
+  another bwrap protection. Even after `unshare -rUm` grants a full *effective*
+  cap set in a child userns, `mount -o remount,rw /`, a bind-mount over a
+  `--ro-bind` path, and `sethostname` all `EPERM` — bwrap's locked mounts are
+  immutable from any descendant userns. The full `CapBnd` is therefore inert.
+- **Hostname allowlists stay out of scope for Cohort B.** Native `allowedDomains`
+  cannot express bare-IP/UDP/dynamic-port device traffic; Cohort A / dual-sandbox
+  remains issue #33.
+- **On by default shifts the dogfood ≈ guest cost.** With the jail the default
+  and fail-closed, a host that hasn't mounted `/dev/net/tun` (a `devcontainer.json`
+  runArg an installer can't add) gets a `claude` that refuses to launch until it
+  either adds the device or sets `CLAUDE_SANDBOX_EGRESS_JAIL=0`. `install.sh`
+  installs pasta so that prerequisite is never the blocker; the dogfood box mounts
+  the tun device. A plain `git clone + ./install` guest that wants the default
+  jail must add the one runArg — the error says so — and otherwise opts out with
+  `=0`. The deliberate trade: a loud stop over a silent downgrade of the default
+  control.
+- **Verification will follow the same three-surface model** as
+  {ref}`adr-integrity-surfaces`: a FUTURE, optional jail-aware check (not yet
+  implemented) would assert, when the jail is enabled, that the netns exists and
+  the RFC1918 blackhole holds with only the configured `allow-ip` routes punched
+  through. This is a future item — the existing 18-check battery already passes
+  unchanged in a jailed session (check 06 asserts `CapEff=0`; see the bullet
+  above), so no jail-aware variant is required today.
+- **Proven before adoption:** the full Design-D chain — holder netns → pasta
+  attach → route lockdown → nested capful bwrap → Claude — works on a real
+  rootless host, *and* the route-immutability security battery passes
+  (`probe-network-jail.sh`, run unjailed).
+- **Done since adoption:** implemented in `claude-shadow`
+  (`netns_launch`/`netns_holder`/`egress_jail_enabled`) plus `install.sh` (installs
+  `passt`, which provides pasta) and tests; on by default, fail-closed, and
+  validated end-to-end on a rootless `--network=host` host **and in a bridge/NAT
+  container** — the gateway-collision and nested-pasta paths are proven (the
+  gateway is pinned on-link before the RFC1918 blackhole, so egress works while
+  RFC1918 and the same subnet stay blocked). The shadow/`install.sh`/tests
+  implementation landed on adoption (2026-06-18).
+- **Still optional/open:** only the jail-aware `/verify-sandbox` check (a future
+  item, not yet implemented — see the verification bullet above). Core
+  internet/RFC1918 behaviour is already proven.
+
+Live design and the feasibility probes: issue **#56** (refines #31, which is
+closed; #33 remains open for Cohort A).

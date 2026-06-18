@@ -30,6 +30,14 @@ bound read-write into the sandbox, and the curated gitconfig uses the
 CLI as a git credential helper, so `git push` authenticates without an
 OAuth popup.
 
+> **Internal (RFC1918) forge?** With the egress jail on (the default),
+> pushing to a forge on an internal IP also needs that IP punched
+> through the RFC1918 blackhole via `allow-ip` in
+> `/etc/claude-sandbox.conf` — otherwise authentication succeeds but the
+> push fails at the network layer. The shipped conf already allows
+> Diamond's GitLab (`172.23.142.119`); for a different internal forge
+> see [Configure the network egress jail](network-egress-jail.md).
+
 ## Recommended PAT shape
 
 The token is reachable by a compromised session, so keep its blast

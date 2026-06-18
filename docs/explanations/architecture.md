@@ -9,10 +9,14 @@ on `$PATH` at `/usr/local/bin/claude`; the real Anthropic binary is
 binary inside a `bwrap` jail. Inside that jail the filesystem is mounted
 read-only and `$HOME` is wiped to a `tmpfs`, so host credentials, IDE bridges,
 and the shell environment are unreachable — while the current workspace stays
-read-write and the network stays open, because Claude needs both to work. A
-separate **integrity guard**, delivered through Claude Code's highest-precedence
-managed-settings layer, fires in every folder and fails loud (and closed) if
-Claude is ever launched outside the shadow.
+read-write and the internet stays reachable, because Claude needs both to work.
+By default Claude's egress is also *jailed* ({ref}`adr-network-egress-jail`): a
+per-process network namespace blackholes the internal RFC1918 network so a
+compromised session cannot pivot sideways to internal hosts, while
+`api.anthropic.com`, the forges, DNS, and configured `allow-ip` devices stay
+reachable. A separate **integrity guard**, delivered through Claude Code's
+highest-precedence managed-settings layer, fires in every folder and fails loud
+(and closed) if Claude is ever launched outside the shadow.
 
 ## Design philosophy
 
@@ -34,6 +38,13 @@ of one of them:
 - **Refusal over silent degradation.** If unprivileged user namespaces are
   forbidden, the installer refuses rather than install a non-functional sandbox.
 
+Two protections live here: **credential isolation** (the `bwrap` bind model) and
+**lateral / sideways network isolation** (the egress jail,
+{ref}`adr-network-egress-jail`, on by default). A third, complementary surface —
+internet *domain* allow-listing — is Claude Code's *native* sandbox; this tool
+*meshes* with it rather than replacing it, so you can run both layers together
+(see [the egress jail and the native sandbox](threat-model.md#the-egress-jail-and-the-native-sandbox)).
+
 For the full inventory of what is locked down vs. deliberately exposed, see the
 [threat model](threat-model.md). This page is the *map* — how the pieces fit.
 
@@ -44,7 +55,9 @@ LLM-driven attack would want: host dotfiles and the host gitconfig, the host
 environment, `/run/secrets`, the VS Code IPC sockets in `/tmp`, X11/runtime
 sockets. The shadow on `$PATH` is the only doorway, and it constructs the jail
 so those things land on the outside. Two exposures are deliberately *inside*:
-the workspace (`$PWD`, read-write) and the network.
+the workspace (`$PWD`, read-write) and the network — but the network is jailed:
+by default the internet, DNS, and `allow-ip` devices are reachable while the
+internal RFC1918 network is blackholed ({ref}`adr-network-egress-jail`).
 
 ```{mermaid}
 graph TB
@@ -63,16 +76,16 @@ graph TB
         real["/usr/libexec/claude-sandbox/claude<br/>(real binary, off-PATH)"]
     end
 
-    subgraph jail["bwrap jail (IS_SANDBOX=1)"]
+    subgraph jail["bwrap jail in the holder netns (IS_SANDBOX=1)"]
         direction TB
         ro["--ro-bind / /<br/>--tmpfs $HOME"]
         ws["workspace $PWD (rw)<br/>deliberate exposure"]
-        net["--share-net<br/>api.anthropic.com, GitHub/GitLab"]
+        net["egress jail (default)<br/>internet + DNS + forges + allow-ip<br/>RFC1918 blackholed"]
     end
 
     user --> shadow
-    shadow -->|bwrap argv wrapped in script pty| jail
-    jail -->|exec ~/.local/bin/claude| real
+    shadow -->|holder netns + pasta attach,<br/>then bwrap wrapped in script pty| jail
+    real -->|exec'd in-jail as<br/>~/.local/bin/claude| jail
     creds -.->|excluded| jail
 ```
 
@@ -83,12 +96,25 @@ resolve past the shadow. (Anthropic's installer drops the binary at
 binary makes that rc-mutation inert.) The dashed line shows the credential set
 being *excluded* from the jail, not bound into it.
 
+The `bwrap` jail nests inside the holder network namespace: the shadow forks an
+`unshare -rn` holder, `pasta` attaches to it from outside by PID and locks the
+routing allowlist, and `bwrap` inherits that netns (it keeps omitting
+`--unshare-net`). Setting `CLAUDE_SANDBOX_EGRESS_JAIL=0` skips the holder and
+restores ADR 0005's shared-host-netns world. See
+{ref}`adr-network-egress-jail` and
+[Configure the network egress jail](../how-to/network-egress-jail.md).
+
 ## 2. Launch sequence
 
 A plain `claude` triggers the shadow, which does three host-side reads
 (regenerate the gitconfig from your live git identity, read the `/etc` config,
-build the argv), then execs `bwrap` wrapped in `script(1)`. The `script(1)` wrap
-allocates a fresh pseudo-terminal — that is the TIOCSTI defence: an `ioctl`
+build the argv). By default it then sets up the egress jail (`netns_launch`): it
+forks an `unshare -rn` holder that owns a fresh user+network namespace, attaches
+`pasta` from outside by PID, and has the holder lock the routing allowlist
+before exec-ing `bwrap` (wrapped in `script(1)`) — which inherits the holder's
+netns. With `CLAUDE_SANDBOX_EGRESS_JAIL=0` it skips the holder and execs `bwrap`
+wrapped in `script(1)` directly (ADR 0005's open-egress world). The `script(1)`
+wrap allocates a fresh pseudo-terminal — that is the TIOCSTI defence: an `ioctl`
 inside the sandbox lands in `script`'s pty, which reads it back as bytes, not
 keystrokes, to the host terminal.
 
@@ -102,6 +128,8 @@ sequenceDiagram
     participant U as shell
     participant S as shadow<br/>/usr/local/bin/claude
     participant FS as host /etc
+    participant H as holder<br/>unshare -rn (netns)
+    participant P as pasta<br/>(attaches by PID)
     participant B as bwrap + script(1)
     participant R as real claude<br/>~/.local/bin/claude (in jail)
 
@@ -114,7 +142,14 @@ sequenceDiagram
         S->>FS: parse_config /etc/claude-sandbox.conf
         S->>S: resolve_workspace_root ($PWD or override)
         S->>S: bwrap_argv_build(workspace, real, args)
-        S->>B: exec script -q -c [bwrap argv] /dev/null
+        alt egress jail enabled (default) — netns_launch
+            S->>H: fork unshare -rn holder
+            S->>P: pasta attach to holder by PID
+            H->>H: netns_holder locks routing allowlist<br/>(RFC1918 blackholed, gw/DNS/allow-ip punched back)
+            H->>B: exec script -q -c [bwrap argv] /dev/null<br/>(inherits holder netns)
+        else CLAUDE_SANDBOX_EGRESS_JAIL=0 — open egress
+            S->>B: exec script -q -c [bwrap argv] /dev/null
+        end
         B->>R: exec --no-chrome [args] with IS_SANDBOX=1
     end
 ```
@@ -241,17 +276,19 @@ run. The full guard mechanics are in [integrity guard](integrity-guard.md).
 
 ## 5. Config trust flow
 
-The sandbox config (`workspace-root`, `no-forge`, `allow-write`) follows the
-same `/etc`-not-the-workspace discipline as the guard, and for the same reason.
-You edit the conf in the clone; `install.sh` copies it to `/etc`; the shadow
-reads it from `/etc` at launch — never from `$PWD`.
+The sandbox config (`workspace-root`, `no-forge`, `allow-write`, `egress-jail`,
+`allow-ip`) follows the same `/etc`-not-the-workspace discipline as the guard,
+and for the same reason. You edit the conf in the clone; `install.sh` copies it
+to `/etc`; the shadow reads it from `/etc` at launch — never from `$PWD`. Like
+`allow-write`, the `allow-ip` device allowlist is read only from `/etc`, so a
+session cannot widen its own network reach.
 
 ```{mermaid}
 graph LR
     clone[".devcontainer/claude-sandbox.conf<br/>(in the clone — you edit here)"]
     etc["/etc/claude-sandbox.conf<br/>(host-global, outside the rw workspace)"]
     shadow["shadow at launch<br/>parse_config()"]
-    argv["bwrap argv<br/>WORKSPACE_ROOT, ALLOW_WRITE, NO_FORGE"]
+    argv["bwrap argv + netns routes<br/>WORKSPACE_ROOT, ALLOW_WRITE, NO_FORGE,<br/>EGRESS_JAIL, ALLOW_IP"]
 
     clone -->|install.sh install_conf<br/>re-stamped each rebuild| etc
     etc -->|read at launch| shadow
@@ -312,7 +349,7 @@ recipe is in the [how-to guide](../how-to.md).
 
 | Concern | File |
 |---|---|
-| Shadow + inlined `bwrap` argv builder, recursion guard, gitconfig render, `script(1)` wrap | `.devcontainer/claude-sandbox/claude-shadow` |
+| Shadow + inlined `bwrap` argv builder, recursion guard, gitconfig render, `script(1)` wrap, egress-jail orchestration (`egress_jail_enabled` / `netns_launch` / `netns_holder`) | `.devcontainer/claude-sandbox/claude-shadow` |
 | Relocate real binary off-PATH; wire shadow; merge managed-settings guard; disable auto-updater; place `/etc` config | `.devcontainer/claude-sandbox/install.sh` |
 | Three-layer promote into a target workspace | `.devcontainer/claude-sandbox/promote.sh` |
 | `SessionStart` guard — full integrity battery + loud warn when unwrapped | `.devcontainer/claude-sandbox/sandbox-verify.sh` |
@@ -326,4 +363,5 @@ recipe is in the [how-to guide](../how-to.md).
 - [Integrity guard](integrity-guard.md) — the managed-settings guard and the unwrapped-launch bypass it closes.
 - [Sandbox internals](../explanations/sandbox-internals.md) — the exact `bwrap` flags and bind list.
 - [Configuration](../reference/configuration.md) — `/etc/claude-sandbox.conf` keys and env-var overrides.
+- [Configure the network egress jail](../how-to/network-egress-jail.md) — turn the lateral-isolation jail on/off and allow-list device IPs.
 - The four sections: [tutorials](../tutorials.md), [how-to](../how-to.md), [reference](../reference.md), [explanations](../explanations.md).

@@ -17,6 +17,13 @@ sandbox installs itself:
 - The parent directory is mounted at `/workspaces`, so all your **peer
   projects sit right there** at `/workspaces/<project>`.
 - Your Claude login and memory persist across rebuilds automatically.
+- Claude's network egress is jailed by default — RFC1918 internal hosts and
+  lab devices are blackholed so a compromised session can't pivot to them,
+  while the internet, DNS, and any `allow-ip` devices stay reachable. This
+  repo's devcontainer already ships the one required runArg
+  (`--device=/dev/net/tun`); see [Configure the network egress
+  jail](../how-to/network-egress-jail.md) to add `allow-ip` devices or turn
+  it off.
 
 So to work on any project, just:
 
@@ -68,6 +75,20 @@ everything lands? See [What's installed](../reference/whats-installed.md).
 If your host can't run unprivileged user namespaces, the installer
 **refuses** with a specific, actionable diagnostic rather than installing a
 non-functional sandbox. Fix the reported problem and re-run.
+
+> **Note: the egress jail needs `/dev/net/tun`.** By default Claude's
+> network egress is jailed — a per-process netns that blackholes internal
+> RFC1918 hosts and lab devices so a compromised session can't pivot to them
+> (see the [threat
+> model](../explanations/threat-model.md#the-egress-jail-and-the-native-sandbox)).
+> The jail is *fail-closed*: if the container has no `/dev/net/tun` device,
+> `claude` **refuses to launch** and tells you so. `install` apt-installs
+> `passt` (which provides `pasta`), but it **cannot** add the runArg for you
+> — that's a `devcontainer.json` edit. Add `"--device=/dev/net/tun"` to your
+> `devcontainer.json` `runArgs` and rebuild (this repo's own devcontainer
+> already does). If you don't need lateral isolation, set
+> `CLAUDE_SANDBOX_EGRESS_JAIL=0` to turn the jail off instead. See [Configure
+> the network egress jail](../how-to/network-egress-jail.md).
 
 To restore the sandbox automatically on every rebuild, wire `bash
 <clone>/install` into your devcontainer's `postCreate.sh`.
@@ -124,6 +145,12 @@ statusline, run `STATUS=1 ./install`.
 
 - [Persist your login and memory across rebuilds](../how-to/persist-login-and-memory.md)
   — add a terminal-config mount if your devcontainer doesn't already have one.
+- [Configure the network egress jail](../how-to/network-egress-jail.md) —
+  the jail is on by default; add `allow-ip` lab devices, satisfy the
+  `--device=/dev/net/tun` requirement, or turn it off. It provides
+  *lateral* (RFC1918) isolation and composes with Claude Code's native
+  `allowedDomains` *internet-domain* isolation as complementary layers — run
+  both.
 - [How-to guides](../how-to.md) — focused recipes for authenticating with
   forges, widening writable paths, and more.
 - [Architecture and threat model](../explanations.md) — why the sandbox is

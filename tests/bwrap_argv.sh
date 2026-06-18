@@ -35,7 +35,7 @@ source "$SHADOW"
 # explicitly in their own subshell, so clearing them here is safe.
 unset VIRTUAL_ENV UV_PROJECT_ENVIRONMENT UV_CACHE_DIR UV_PYTHON_CACHE_DIR \
       PRE_COMMIT_HOME CLAUDE_SANDBOX_WORKSPACE_ROOT CLAUDE_SANDBOX_NO_FORGE \
-      CLAUDE_SANDBOX_ALLOW_WRITE
+      CLAUDE_SANDBOX_ALLOW_WRITE CLAUDE_SANDBOX_EGRESS_JAIL CLAUDE_SANDBOX_ALLOW_IP
 
 PASSED=0
 FAILED=0
@@ -358,6 +358,77 @@ assert_parse scenario11-allow-write-multi bash -c "
     parse_config \"$TMPCONF\"
     printf '%s\n' \"\$CLAUDE_SANDBOX_ALLOW_WRITE\" | grep -qxF '/path/one' &&
     printf '%s\n' \"\$CLAUDE_SANDBOX_ALLOW_WRITE\" | grep -qxF '/path/two'
+"
+
+# egress-jail ON by default (ADR 0015): absent from conf + unset env => enabled
+printf 'no-forge\n' > "$TMPCONF"
+assert_parse scenario11-egress-jail-default-on bash -c "
+    source \"$SHADOW\"
+    unset CLAUDE_SANDBOX_EGRESS_JAIL
+    parse_config \"$TMPCONF\"
+    egress_jail_enabled
+"
+
+# a bare `egress-jail` key reaffirms on
+printf 'egress-jail\n' > "$TMPCONF"
+assert_parse scenario11-egress-jail-bare bash -c "
+    source \"$SHADOW\"
+    unset CLAUDE_SANDBOX_EGRESS_JAIL
+    parse_config \"$TMPCONF\"
+    [ \"\${CLAUDE_SANDBOX_EGRESS_JAIL:-}\" = '1' ] && egress_jail_enabled
+"
+
+# `egress-jail = 0` in conf disables the jail
+printf 'egress-jail = 0\n' > "$TMPCONF"
+assert_parse scenario11-egress-jail-conf-off bash -c "
+    source \"$SHADOW\"
+    unset CLAUDE_SANDBOX_EGRESS_JAIL
+    parse_config \"$TMPCONF\"
+    [ \"\${CLAUDE_SANDBOX_EGRESS_JAIL:-}\" = '0' ] && ! egress_jail_enabled
+"
+
+# env CLAUDE_SANDBOX_EGRESS_JAIL=0 wins over a bare conf `egress-jail`
+printf 'egress-jail\n' > "$TMPCONF"
+assert_parse scenario11-egress-jail-env-off-wins bash -c "
+    source \"$SHADOW\"
+    export CLAUDE_SANDBOX_EGRESS_JAIL=0
+    parse_config \"$TMPCONF\"
+    [ \"\$CLAUDE_SANDBOX_EGRESS_JAIL\" = '0' ] && ! egress_jail_enabled
+"
+
+# the predicate's default-on holds with no conf parsed at all
+assert_parse scenario11-egress-jail-predicate-default bash -c "
+    source \"$SHADOW\"
+    unset CLAUDE_SANDBOX_EGRESS_JAIL
+    egress_jail_enabled
+"
+
+# allow-ip single
+printf 'allow-ip = 172.23.1.2\n' > "$TMPCONF"
+assert_parse scenario11-allow-ip-single bash -c "
+    source \"$SHADOW\"
+    unset CLAUDE_SANDBOX_ALLOW_IP
+    parse_config \"$TMPCONF\"
+    [ \"\${CLAUDE_SANDBOX_ALLOW_IP:-}\" = '172.23.1.2' ]
+"
+
+# allow-ip multiple, accumulated newline-separated
+printf 'allow-ip = 172.23.1.2\nallow-ip = 10.0.5.6\n' > "$TMPCONF"
+assert_parse scenario11-allow-ip-multi bash -c "
+    source \"$SHADOW\"
+    unset CLAUDE_SANDBOX_ALLOW_IP
+    parse_config \"$TMPCONF\"
+    printf '%s\n' \"\$CLAUDE_SANDBOX_ALLOW_IP\" | grep -qxF '172.23.1.2' &&
+    printf '%s\n' \"\$CLAUDE_SANDBOX_ALLOW_IP\" | grep -qxF '10.0.5.6'
+"
+
+# allow-ip with empty value is skipped (no trailing blank entry)
+printf 'allow-ip =\n' > "$TMPCONF"
+assert_parse scenario11-allow-ip-empty bash -c "
+    source \"$SHADOW\"
+    unset CLAUDE_SANDBOX_ALLOW_IP
+    parse_config \"$TMPCONF\"
+    [ -z \"\${CLAUDE_SANDBOX_ALLOW_IP:-}\" ]
 "
 
 # comments and blank lines are ignored
