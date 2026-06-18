@@ -36,9 +36,11 @@ command -v bwrap   >/dev/null || { echo "bwrap not found — sudo apt-get instal
 command -v unshare >/dev/null || { echo "unshare not found — install util-linux"; exit 2; }
 [ -e /dev/net/tun ] || { echo "/dev/net/tun missing — add --device=/dev/net/tun to runArgs + rebuild"; exit 2; }
 
-READY=/tmp/jail.ready; rm -f "$READY"; export READY
+RUNDIR=$(mktemp -d)
+READY="$RUNDIR/jail.ready"; export READY
+PASTA_ERR="$RUNDIR/jail.pasta.err"
 INNER=$(mktemp); HOLD=$(mktemp); export INNER
-trap 'rm -f "$INNER" "$HOLD" "$READY"; pkill -f "pasta.*--config-net" 2>/dev/null || true' EXIT
+trap 'rm -f "$INNER" "$HOLD"; rm -rf "$RUNDIR"; [ -n "${HOLDER:-}" ] && kill "$HOLDER" 2>/dev/null || true' EXIT
 
 # INNER — Claude's vantage inside bwrap. Asserts the policy via `ip route get`
 # (no traffic) plus real connectivity. NAME/DEV/JAIL_* arrive as env vars.
@@ -86,7 +88,7 @@ EOF
 # HOLDER — owns the user+net ns; waits for pasta; applies the v2 surgical policy;
 # hands off to a capless-by-ownership bwrap. Runs inside `unshare -rn`.
 cat > "$HOLD" <<'EOF'
-set -u
+set -eu
 ip link set lo up
 for _ in $(seq 1 200); do [ -f "$READY" ] && break; sleep 0.05; done
 [ -f "$READY" ] || { echo "  [holder] parent never signalled ready"; exit 3; }
@@ -112,9 +114,11 @@ ip route replace default via "$gw" dev "$dev"
 for ns in "${dns[@]:-}"; do
   [ -n "$ns" ] || continue
   case "$ns" in 127.*|::1|"$gw") continue;; esac
-  ip route replace "$ns/32" via "$gw"
+  ip route replace "$ns/32" via "$gw" || echo "  [holder] WARN: failed DNS punch-back for $ns"
 done
-if [ -n "${DEV:-}" ]; then ip route replace "${DEV%:*}/32" via "$gw"; fi
+if [ -n "${DEV:-}" ]; then
+  ip route replace "${DEV%:*}/32" via "$gw" || echo "  [holder] WARN: failed allow-ip punch-back for ${DEV%:*}"
+fi
 
 export JAIL_GW="$gw" JAIL_SUBNET="${subnet:-}" JAIL_DNS="${dns[*]:-}"
 exec bwrap --ro-bind / / --dev /dev --unshare-pid --cap-drop ALL -- bash "$INNER"
@@ -125,10 +129,10 @@ HOLDER=$!
 for _ in $(seq 1 200); do [ -e "/proc/$HOLDER/ns/net" ] && break; sleep 0.05; done
 [ -e "/proc/$HOLDER/ns/net" ] || { echo "FAIL  holder netns never appeared"; exit 5; }
 
-if pasta --config-net "$HOLDER" 2>/tmp/jail.pasta.err; then
+if pasta --config-net "$HOLDER" 2>"$PASTA_ERR"; then
   echo "  [probe] pasta attached to holder netns (pid $HOLDER)"
 else
-  echo "  [probe] pasta attach FAILED:"; sed 's/^/    /' /tmp/jail.pasta.err
+  echo "  [probe] pasta attach FAILED:"; sed 's/^/    /' "$PASTA_ERR"
   pasta --help 2>&1 | sed -n '1,60p'; kill "$HOLDER" 2>/dev/null || true; exit 6
 fi
 

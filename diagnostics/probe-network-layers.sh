@@ -43,8 +43,13 @@ else
   exit 1
 fi
 if command -v pasta >/dev/null; then
-  if pasta --config-net -- true 2>/tmp/pp.err; then P "pasta set up a namespace + tap"
-  else F "pasta -> $(tr -d '\n' </tmp/pp.err | cut -c1-160)"; fi
+  if pasta --config-net -- true 2>/tmp/pp.err; then
+    P "pasta set up a namespace + tap"
+  else
+    F "pasta -> $(tr -d '\n' </tmp/pp.err | cut -c1-160)"
+    rm -f /tmp/pp.err
+    exit 1
+  fi
   rm -f /tmp/pp.err
 else
   I "pasta not installed (sudo apt-get install passt) — skipped"
