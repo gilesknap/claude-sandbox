@@ -293,14 +293,136 @@ parse_config() {
                 : "${CLAUDE_SANDBOX_NO_FORGE:=1}"
                 export CLAUDE_SANDBOX_NO_FORGE
                 ;;
+            egress-jail)
+                # Opt-in gate for the per-process network egress jail (ADR 0015,
+                # Design D). Off unless this is set, so dogfood ≈ guest is
+                # unchanged for hosts that don't enable it.
+                : "${CLAUDE_SANDBOX_EGRESS_JAIL:=1}"
+                export CLAUDE_SANDBOX_EGRESS_JAIL
+                ;;
             allow-write)
                 [ -z "$value" ] && continue
                 CLAUDE_SANDBOX_ALLOW_WRITE="${CLAUDE_SANDBOX_ALLOW_WRITE:+${CLAUDE_SANDBOX_ALLOW_WRITE}
 }${value}"
                 export CLAUDE_SANDBOX_ALLOW_WRITE
                 ;;
+            allow-ip)
+                # Device IPs the jail keeps reachable past the RFC1918 blackhole
+                # (EPICS IOC / PMAC etc.). Repeatable; accumulated newline-
+                # separated like allow-write. Read from /etc only (never the
+                # workspace), so a compromised session can't widen its own reach.
+                [ -z "$value" ] && continue
+                CLAUDE_SANDBOX_ALLOW_IP="${CLAUDE_SANDBOX_ALLOW_IP:+${CLAUDE_SANDBOX_ALLOW_IP}
+}${value}"
+                export CLAUDE_SANDBOX_ALLOW_IP
+                ;;
         esac
     done < "$conf"
+}
+
+# netns_holder: runs inside `unshare -rn` (a user+net namespace it owns).
+# Brings up loopback, waits for claude-shadow to attach pasta and signal
+# readiness, locks the routing allowlist, then execs the real launch ("$@").
+#
+# Security model (ADR 0015, Design D): this process holds CAP_NET_ADMIN over its
+# OWN netns, so it can program the routes. The bwrap it then execs nests its own
+# userns and is therefore NOT capless (full CapBnd) — but that netns is owned by
+# THIS (ancestor) userns, so Claude's caps confer no authority over it: route
+# edits / device adds fail EPERM from inside. Caplessness is not the boundary;
+# ancestor-userns ownership is. Fail-closed: any add of a blackhole route that
+# fails aborts the holder (set -e) so Claude never starts un-allowlisted.
+netns_holder() {
+    ip link set lo up
+    local i
+    for i in $(seq 1 200); do
+        if [ -f "$CLAUDE_JAIL_READY" ]; then break; fi
+        sleep 0.05
+    done
+    if [ ! -f "$CLAUDE_JAIL_READY" ]; then
+        echo "claude-sandbox: egress jail — pasta never signalled ready" >&2
+        exit 1
+    fi
+    if ! ip route show default | grep -q .; then
+        echo "claude-sandbox: egress jail — no default route after pasta attach" >&2
+        exit 1
+    fi
+    local gw=""
+    read -r _ _ gw _ < <(ip route show default) || true
+    # Routing-as-allowlist: drop any pasta-mirrored LAN routes, blackhole
+    # RFC1918, keep the default route (=> internet via pasta).
+    local n
+    for n in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16; do
+        ip route del "$n" 2>/dev/null || true
+    done
+    ip route add blackhole   10.0.0.0/8
+    ip route add blackhole   172.16.0.0/12
+    ip route add blackhole   192.168.0.0/16
+    ip route add unreachable 169.254.0.0/16
+    # Punch host routes for the configured device IPs (EPICS IOC / PMAC). A
+    # failed device route is a reachability loss, not a security hole (the
+    # blackhole still holds), so it warns rather than aborting.
+    if [ -n "${CLAUDE_SANDBOX_ALLOW_IP:-}" ] && [ -n "$gw" ]; then
+        local dev
+        while IFS= read -r dev; do
+            if [ -z "$dev" ]; then continue; fi
+            ip route add "${dev%/*}/32" via "$gw" 2>/dev/null \
+                || echo "claude-sandbox: egress jail — could not route allow-ip $dev" >&2
+        done <<< "$CLAUDE_SANDBOX_ALLOW_IP"
+    fi
+    exec "$@"
+}
+
+# netns_launch: Design D orchestration (ADR 0015). Runs the launch ("$@") inside
+# a user+net namespace bridged to the internet by pasta, with the routing
+# allowlist above. The holder must create the netns (not bwrap, not pasta): the
+# container has no CAP_NET_ADMIN to make a netns without a userns, and a pasta-
+# created namespace set leaves bwrap a /proc it can't use. Fail-closed: if the
+# jail is requested but its prerequisites are missing, Claude does not launch.
+netns_launch() {
+    command -v unshare >/dev/null 2>&1 || { echo "claude-sandbox: egress jail needs unshare (util-linux)" >&2; exit 1; }
+    command -v pasta   >/dev/null 2>&1 || { echo "claude-sandbox: egress jail needs pasta (apt-get install passt)" >&2; exit 1; }
+    if [ ! -e /dev/net/tun ]; then
+        echo "claude-sandbox: egress jail needs /dev/net/tun — add --device=/dev/net/tun to the container" >&2
+        exit 1
+    fi
+
+    CLAUDE_JAIL_READY="$(mktemp -u "${TMPDIR:-/tmp}/claude-jail-ready.XXXXXX")"
+    export CLAUDE_JAIL_READY
+    rm -f "$CLAUDE_JAIL_READY"
+
+    export -f netns_holder
+    # Explicit <&0 keeps the holder's stdin on the terminal: bash redirects a
+    # background job's stdin to /dev/null otherwise, which would break Claude's
+    # interactive TUI. Job control is off in this non-interactive shell, so the
+    # holder shares the shell's process group (the terminal's foreground group)
+    # — no SIGTTIN/SIGTTOU when it (and the nested script(1)/bwrap) use the tty.
+    unshare -rn bash -c 'netns_holder "$@"' _ "$@" <&0 &
+    local holder=$!
+
+    local i
+    for i in $(seq 1 200); do
+        if [ -e "/proc/$holder/ns/net" ]; then break; fi
+        sleep 0.05
+    done
+    if [ ! -e "/proc/$holder/ns/net" ]; then
+        echo "claude-sandbox: egress jail — holder netns never appeared" >&2
+        kill "$holder" 2>/dev/null || true
+        exit 1
+    fi
+
+    # pasta attaches from OUTSIDE the netns (it needs host connectivity to
+    # proxy), configures the default route, and backgrounds itself.
+    if ! pasta --config-net "$holder"; then
+        echo "claude-sandbox: egress jail — pasta failed to attach to the netns" >&2
+        kill "$holder" 2>/dev/null || true
+        exit 1
+    fi
+    : > "$CLAUDE_JAIL_READY"
+
+    local rc=0
+    wait "$holder" || rc=$?
+    rm -f "$CLAUDE_JAIL_READY"
+    exit "$rc"
 }
 
 # Guard: tests source this file with CLAUDE_SHADOW_SOURCE_ONLY=1 so
@@ -373,4 +495,11 @@ mapfile -t ARGV < <(bwrap_argv_build "$WORKSPACE_ROOT" "$REAL_CLAUDE" "$@")
 # is defanged (an ioctl inside the sandbox lands in script's pty, which
 # script reads and writes back as bytes — not keystrokes — to the host
 # terminal).
-exec script -q -E never -c "$(printf '%q ' "${ARGV[@]}")" /dev/null
+if [ "${CLAUDE_SANDBOX_EGRESS_JAIL:-}" = "1" ]; then
+    # ADR 0015 (opt-in): run the sandbox inside a pasta-bridged netns with a
+    # routing allowlist. netns_launch cannot `exec` — it must stay foreground to
+    # drive the holder/pasta handshake — so it exits with the sandbox's status.
+    netns_launch script -q -E never -c "$(printf '%q ' "${ARGV[@]}")" /dev/null
+else
+    exec script -q -E never -c "$(printf '%q ' "${ARGV[@]}")" /dev/null
+fi
