@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Layered feasibility probe — separates the tun-INDEPENDENT core (unprivileged
 # netns + in-netns routing) from the tun-DEPENDENT forwarder step, so you can
-# see which half each result belongs to. Companion to probe-network-egress.sh
+# see which half each result belongs to. Companion to probe-network-jail.sh
 # (the full pasta egress test). Issue #56 / refines #31 Option C.
 #
 # ► RUN ME UNJAILED ◄  (normal terminal, not a sandboxed `claude`).
