@@ -10,14 +10,9 @@ set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
-PASSED=0
-FAILED=0
-
-pass() { PASSED=$((PASSED+1)); }
-fail() {
-    FAILED=$((FAILED+1))
-    echo "FAIL: $1" >&2
-}
+# Shared assertions + PASS/FAIL counters + jq_check + register_cleanup.
+# shellcheck source=lib.sh
+source "$REPO_ROOT/tests/lib.sh"
 
 PREFIX="$(mktemp -d)"
 WORKSPACE="$(mktemp -d)"
@@ -25,7 +20,7 @@ WORKSPACE="$(mktemp -d)"
 # into. Pin it at a tmpdir so the suite NEVER touches the real
 # ~/.claude/settings.json of whoever runs the test.
 USER_HOME_DIR="$(mktemp -d)"
-trap 'rm -rf "$PREFIX" "$WORKSPACE" "$USER_HOME_DIR"' EXIT
+register_cleanup "$PREFIX" "$WORKSPACE" "$USER_HOME_DIR"
 
 export CLAUDE_SANDBOX_SMOKE=1
 export INSTALL_PREFIX="$PREFIX"
@@ -84,44 +79,22 @@ done
 # Managed settings (the highest-precedence, user-uneditable policy layer)
 # carries the guard hooks + updater-disable.
 MANAGED="$PREFIX/etc/claude-code/managed-settings.json"
-if [ -f "$MANAGED" ] && jq -e . "$MANAGED" >/dev/null 2>&1; then
-    pass
-else
-    fail "managed-settings.json missing or not valid JSON at $MANAGED"
-fi
-if jq -e 'any(.hooks.SessionStart[].hooks[]?; (.command // "") | endswith("sandbox-verify.sh"))' \
-        "$MANAGED" >/dev/null 2>&1; then
-    pass
-else
-    fail "managed-settings.json missing SessionStart sandbox-verify.sh entry"
-fi
-if jq -e 'any(.hooks.UserPromptSubmit[].hooks[]?; (.command // "") | endswith("sandbox-gate.sh"))' \
-        "$MANAGED" >/dev/null 2>&1; then
-    pass
-else
-    fail "managed-settings.json missing UserPromptSubmit sandbox-gate.sh entry"
-fi
+jq_check "managed-settings.json missing or not valid JSON at $MANAGED" \
+    '.' "$MANAGED"
+jq_check "managed-settings.json missing SessionStart sandbox-verify.sh entry" \
+    'any(.hooks.SessionStart[].hooks[]?; (.command // "") | endswith("sandbox-verify.sh"))' "$MANAGED"
+jq_check "managed-settings.json missing UserPromptSubmit sandbox-gate.sh entry" \
+    'any(.hooks.UserPromptSubmit[].hooks[]?; (.command // "") | endswith("sandbox-gate.sh"))' "$MANAGED"
 # Guard commands must point at the absolute /usr/libexec scripts (not $HOME).
-if jq -e 'any(.. | .command? // empty; startswith("bash /usr/libexec/claude-sandbox/"))' \
-        "$MANAGED" >/dev/null 2>&1; then
-    pass
-else
-    fail "managed guard command does not point at /usr/libexec/claude-sandbox"
-fi
+jq_check "managed guard command does not point at /usr/libexec/claude-sandbox" \
+    'any(.. | .command? // empty; startswith("bash /usr/libexec/claude-sandbox/"))' "$MANAGED"
 # Auto-updater hard-disabled in managed settings.
-if [ "$(jq -r '.env.DISABLE_AUTOUPDATER' "$MANAGED" 2>/dev/null)" = "1" ] \
-        && [ "$(jq -r '.autoUpdates' "$MANAGED" 2>/dev/null)" = "false" ]; then
-    pass
-else
-    fail "managed-settings.json missing env.DISABLE_AUTOUPDATER=1 / autoUpdates=false"
-fi
+jq_check "managed-settings.json missing env.DISABLE_AUTOUPDATER=1 / autoUpdates=false" \
+    '(.env.DISABLE_AUTOUPDATER == "1") and (.autoUpdates == false)' "$MANAGED"
 # allowManagedHooksOnly must NOT be set — that would block the owner's
 # own hooks, which is more than we want.
-if [ "$(jq -r 'has("allowManagedHooksOnly")' "$MANAGED" 2>/dev/null)" = "false" ]; then
-    pass
-else
-    fail "managed-settings.json set allowManagedHooksOnly (would block owner hooks)"
-fi
+jq_check "managed-settings.json set allowManagedHooksOnly (would block owner hooks)" \
+    '(has("allowManagedHooksOnly") | not)' "$MANAGED"
 
 # User-scope settings.json now holds ONLY the statusline preference — the
 # guard must NOT be wired here.
@@ -132,24 +105,13 @@ if [ -x "$SL_DEST" ]; then
 else
     fail "user-scope statusline not placed/executable at $SL_DEST"
 fi
-if [ -f "$SETTINGS" ] && jq -e . "$SETTINGS" >/dev/null 2>&1; then
-    pass
-else
-    fail "user settings.json missing or not valid JSON at $SETTINGS"
-fi
-if jq -e '(.statusLine.type == "command") and (.statusLine.command | endswith("statusline-command.sh"))' \
-        "$SETTINGS" >/dev/null 2>&1; then
-    pass
-else
-    fail "user settings.json missing/!command .statusLine"
-fi
+jq_check "user settings.json missing or not valid JSON at $SETTINGS" \
+    '.' "$SETTINGS"
+jq_check "user settings.json missing/!command .statusLine" \
+    '(.statusLine.type == "command") and (.statusLine.command | endswith("statusline-command.sh"))' "$SETTINGS"
 # The guard must NOT appear in user-scope settings.
-if jq -e '[.. | .command? // empty | select(endswith("sandbox-verify.sh") or endswith("sandbox-gate.sh"))] | length == 0' \
-        "$SETTINGS" >/dev/null 2>&1; then
-    pass
-else
-    fail "guard hooks leaked into user-scope settings.json (should be managed-only)"
-fi
+jq_check "guard hooks leaked into user-scope settings.json (should be managed-only)" \
+    '[.. | .command? // empty | select(endswith("sandbox-verify.sh") or endswith("sandbox-gate.sh"))] | length == 0' "$SETTINGS"
 
 # Config placement: install copies the clone's conf to the host-global
 # /etc/claude-sandbox.conf the shadow reads at launch (prefixed for the
@@ -192,7 +154,7 @@ done
 # AND a foreign hook in the same events must be preserved; our guard is
 # added (deduped); the merge is a fixed point.
 MGD_PREFIX="$(mktemp -d)"
-trap 'rm -rf "$PREFIX" "$WORKSPACE" "$USER_HOME_DIR" "$MGD_PREFIX"' EXIT
+register_cleanup "$MGD_PREFIX"
 mkdir -p "$MGD_PREFIX/etc/claude-code"
 cat > "$MGD_PREFIX/etc/claude-code/managed-settings.json" <<'JSON'
 {
@@ -206,23 +168,13 @@ MGD="$MGD_PREFIX/etc/claude-code/managed-settings.json"
 INSTALL_PREFIX="$MGD_PREFIX" INSTALL_USER_HOME="$(mktemp -d)" \
     bash "$REPO_ROOT/.devcontainer/claude-sandbox/install.sh" >/dev/null 2>&1
 
-if jq -e '.permissions.defaultMode == "plan"' "$MGD" >/dev/null 2>&1; then
-    pass
-else
-    fail "managed merge dropped pre-existing admin key"
-fi
-if jq -e 'any(.hooks.SessionStart[].hooks[]?; .command == "org-audit.sh")' "$MGD" >/dev/null 2>&1; then
-    pass
-else
-    fail "managed merge dropped pre-existing admin hook"
-fi
-if jq -e 'any(.hooks.SessionStart[].hooks[]?; (.command // "")|endswith("sandbox-verify.sh"))
-          and any(.hooks.UserPromptSubmit[].hooks[]?; (.command // "")|endswith("sandbox-gate.sh"))' \
-        "$MGD" >/dev/null 2>&1; then
-    pass
-else
-    fail "managed merge did not add our guard alongside the admin hook"
-fi
+jq_check "managed merge dropped pre-existing admin key" \
+    '.permissions.defaultMode == "plan"' "$MGD"
+jq_check "managed merge dropped pre-existing admin hook" \
+    'any(.hooks.SessionStart[].hooks[]?; .command == "org-audit.sh")' "$MGD"
+jq_check "managed merge did not add our guard alongside the admin hook" \
+    'any(.hooks.SessionStart[].hooks[]?; (.command // "")|endswith("sandbox-verify.sh"))
+     and any(.hooks.UserPromptSubmit[].hooks[]?; (.command // "")|endswith("sandbox-gate.sh"))' "$MGD"
 
 # Re-merge dedup: running again must NOT duplicate our entries.
 INSTALL_PREFIX="$MGD_PREFIX" INSTALL_USER_HOME="$(mktemp -d)" \
@@ -239,7 +191,7 @@ fi
 # pruned so the guard has a single home (managed). Foreign user hooks +
 # keys are preserved; the owner's statusline is respected.
 MIG_HOME="$(mktemp -d)"
-trap 'rm -rf "$PREFIX" "$WORKSPACE" "$USER_HOME_DIR" "$MGD_PREFIX" "$MIG_HOME"' EXIT
+register_cleanup "$MIG_HOME"
 mkdir -p "$MIG_HOME/.claude"
 cat > "$MIG_HOME/.claude/settings.json" <<'JSON'
 {
@@ -264,23 +216,12 @@ INSTALL_USER_HOME="$MIG_HOME" \
     bash "$REPO_ROOT/.devcontainer/claude-sandbox/install.sh" >/dev/null 2>&1
 MIG="$MIG_HOME/.claude/settings.json"
 
-if jq -e '[.. | .command? // empty | select(endswith("sandbox-verify.sh") or endswith("sandbox-gate.sh"))] | length == 0' \
-        "$MIG" >/dev/null 2>&1; then
-    pass
-else
-    fail "interim user-scope guard hooks were not pruned"
-fi
-if jq -e 'any(.hooks.UserPromptSubmit[].hooks[]?; .command == "their-ups.sh") and .model == "opus"' \
-        "$MIG" >/dev/null 2>&1; then
-    pass
-else
-    fail "prune dropped a foreign hook / key"
-fi
-if jq -e '.statusLine.command == "their-statusline.sh"' "$MIG" >/dev/null 2>&1; then
-    pass
-else
-    fail "pre-existing .statusLine was overwritten during migration"
-fi
+jq_check "interim user-scope guard hooks were not pruned" \
+    '[.. | .command? // empty | select(endswith("sandbox-verify.sh") or endswith("sandbox-gate.sh"))] | length == 0' "$MIG"
+jq_check "prune dropped a foreign hook / key" \
+    'any(.hooks.UserPromptSubmit[].hooks[]?; .command == "their-ups.sh") and .model == "opus"' "$MIG"
+jq_check "pre-existing .statusLine was overwritten during migration" \
+    '.statusLine.command == "their-statusline.sh"' "$MIG"
 if grep -qx 'echo custom' "$MIG_HOME/.claude/statusline-command.sh"; then
     pass
 else
@@ -293,7 +234,7 @@ fi
 # stays pinned at the global tmpdir so the guard merge never touches HOME.
 LINK_HOME="$(mktemp -d)"
 LINK_SHARED="$(mktemp -d)"
-trap 'rm -rf "$PREFIX" "$WORKSPACE" "$USER_HOME_DIR" "$MGD_PREFIX" "$MIG_HOME" "$LINK_HOME" "$LINK_SHARED" "$ADOPT_HOME" "$ADOPT_SHARED" "$SEED_HOME" "$SEED_SHARED"' EXIT
+register_cleanup "$LINK_HOME" "$LINK_SHARED"
 HOME="$LINK_HOME" CLAUDE_SHARED_CONFIG="$LINK_SHARED" \
     INSTALL_WORKSPACE="$WORKSPACE" \
     bash "$REPO_ROOT/.devcontainer/claude-sandbox/install.sh" >/dev/null 2>&1
@@ -336,6 +277,7 @@ ADOPT_HOME="$(mktemp -d)"
 ADOPT_SHARED="$(mktemp -d)"
 SEED_HOME="$(mktemp -d)"
 SEED_SHARED="$(mktemp -d)"
+register_cleanup "$ADOPT_HOME" "$ADOPT_SHARED" "$SEED_HOME" "$SEED_SHARED"
 mkdir -p "$ADOPT_HOME/.claude" "$ADOPT_SHARED/.claude"
 echo local  > "$ADOPT_HOME/.claude/marker";   printf 'local'  > "$ADOPT_HOME/.claude.json"
 echo shared > "$ADOPT_SHARED/.claude/marker"; printf 'shared' > "$ADOPT_SHARED/.claude.json"
@@ -381,5 +323,4 @@ if command -v bwrap >/dev/null 2>&1 && [ "${IS_SANDBOX:-}" != "1" ]; then
     fi
 fi
 
-echo "smoke.sh: $PASSED passed / $FAILED failed"
-[ "$FAILED" -eq 0 ]
+finish smoke.sh

@@ -17,23 +17,29 @@ set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PROMOTE="$REPO_ROOT/.devcontainer/claude-sandbox/promote.sh"
 
-PASSED=0
-FAILED=0
-pass() { PASSED=$((PASSED+1)); }
-fail() {
-    FAILED=$((FAILED+1))
-    echo "FAIL: $1" >&2
-}
+# Shared assertions + PASS/FAIL counters + register_cleanup.
+# shellcheck source=lib.sh
+source "$REPO_ROOT/tests/lib.sh"
 
 run_promote() {
     bash "$PROMOTE" "$@" >/dev/null 2>&1
+}
+
+# expect_byte_equal SRC DST — pass iff the two files are byte-identical.
+expect_byte_equal() {
+    local src="$1" dst="$2"
+    if cmp -s "$src" "$dst"; then
+        pass
+    else
+        fail "$dst differs from source $src"
+    fi
 }
 
 # ============================================================
 # Section 1: clean target.
 # ============================================================
 TARGET="$(mktemp -d)"
-trap 'rm -rf "$TARGET"' EXIT
+register_cleanup "$TARGET"
 
 if ! run_promote "$TARGET"; then
     fail "first promote run exited non-zero on clean target"
@@ -41,18 +47,10 @@ fi
 
 # Curated .claude/ tree (representative subset — full coverage would
 # couple this test to skill churn).
-expect_file() {
-    local rel="$1"
-    if [ -f "$TARGET/$rel" ]; then
-        pass
-    else
-        fail "missing $rel in promoted target"
-    fi
-}
-expect_file ".claude/commands/verify-sandbox.md"
-expect_file ".claude/commands/memo.md"
-expect_file ".claude/skills/claude-sandbox/SKILL.md"
-expect_file ".claude/skills/diagnose/SKILL.md"
+expect_file "$TARGET/.claude/commands/verify-sandbox.md"
+expect_file "$TARGET/.claude/commands/memo.md"
+expect_file "$TARGET/.claude/skills/claude-sandbox/SKILL.md"
+expect_file "$TARGET/.claude/skills/diagnose/SKILL.md"
 
 # Byte-equal source check on a skill .md.
 if cmp -s "$REPO_ROOT/.claude/skills/claude-sandbox/SKILL.md" \
@@ -77,14 +75,6 @@ fi
 # Install machinery: byte-equal copies of install.sh, claude-shadow,
 # promote.sh. The root `install` shim is intentionally NOT copied —
 # promoted repos invoke install.sh directly from postCreate.
-expect_byte_equal() {
-    local src="$1" dst="$2"
-    if cmp -s "$src" "$dst"; then
-        pass
-    else
-        fail "$dst differs from source $src"
-    fi
-}
 expect_byte_equal "$REPO_ROOT/.devcontainer/claude-sandbox/install.sh"        "$TARGET/.devcontainer/claude-sandbox/install.sh"
 expect_byte_equal "$REPO_ROOT/.devcontainer/claude-sandbox/claude-shadow"     "$TARGET/.devcontainer/claude-sandbox/claude-shadow"
 expect_byte_equal "$REPO_ROOT/.devcontainer/claude-sandbox/promote.sh"        "$TARGET/.devcontainer/claude-sandbox/promote.sh"
@@ -94,7 +84,7 @@ expect_byte_equal "$REPO_ROOT/.devcontainer/claude-sandbox/sandbox-verify.sh" "$
 expect_byte_equal "$REPO_ROOT/.devcontainer/claude-sandbox/sandbox-gate.sh"   "$TARGET/.devcontainer/claude-sandbox/sandbox-gate.sh"
 expect_byte_equal "$REPO_ROOT/justfile"                                   "$TARGET/justfile"
 # Config file — should land in target on first promote.
-expect_file ".devcontainer/claude-sandbox.conf"
+expect_file "$TARGET/.devcontainer/claude-sandbox.conf"
 
 # Root `install` shim must NOT land in the target.
 if [ ! -e "$TARGET/install" ]; then
@@ -138,7 +128,7 @@ fi
 # Run it under SMOKE with tmpdir prefix + user-home.
 PROMOTED_PREFIX="$(mktemp -d)"
 PROMOTED_HOME="$(mktemp -d)"
-trap 'rm -rf "$TARGET" "$PROMOTED_PREFIX" "$PROMOTED_HOME"' EXIT
+register_cleanup "$PROMOTED_PREFIX" "$PROMOTED_HOME"
 CLAUDE_SANDBOX_SMOKE=1 INSTALL_USER_HOME="$PROMOTED_HOME" INSTALL_PREFIX="$PROMOTED_PREFIX" \
     bash "$TARGET/.devcontainer/claude-sandbox/install.sh" >/dev/null 2>&1
 if [ -x "$PROMOTED_PREFIX/usr/libexec/claude-sandbox/sandbox-verify.sh" ] \
@@ -169,7 +159,7 @@ fi
 # existing postCreateCommand, etc.).
 # ============================================================
 DC_TARGET="$(mktemp -d)"
-trap 'rm -rf "$TARGET" "$DC_TARGET"' EXIT
+register_cleanup "$DC_TARGET"
 mkdir -p "$DC_TARGET/.devcontainer"
 cat > "$DC_TARGET/.devcontainer/devcontainer.json" <<'JSONC'
 // JSONC with a comment so jq can't parse it, and a postCreateCommand
@@ -203,7 +193,7 @@ fi
 # Section 3: existing postCreate.sh — append our line, dedup on re-run.
 # ============================================================
 APPEND_TARGET="$(mktemp -d)"
-trap 'rm -rf "$TARGET" "$DC_TARGET" "$APPEND_TARGET"' EXIT
+register_cleanup "$APPEND_TARGET"
 mkdir -p "$APPEND_TARGET/.devcontainer"
 cat > "$APPEND_TARGET/.devcontainer/postCreate.sh" <<'EOF'
 #!/usr/bin/env bash
@@ -240,7 +230,9 @@ else
     pass
 fi
 
-NONEXISTENT="$(mktemp -d)/does-not-exist"
+NONEXISTENT_PARENT="$(mktemp -d)"
+register_cleanup "$NONEXISTENT_PARENT"
+NONEXISTENT="$NONEXISTENT_PARENT/does-not-exist"
 if bash "$PROMOTE" "$NONEXISTENT" >/dev/null 2>&1; then
     fail "promote did not refuse a missing target dir"
 else
@@ -251,7 +243,7 @@ fi
 # Section 5: claude-sandbox.conf survives re-promote (user edits kept).
 # ============================================================
 CONF_TARGET="$(mktemp -d)"
-trap 'rm -rf "$TARGET" "$DC_TARGET" "$APPEND_TARGET" "$CONF_TARGET"' EXIT
+register_cleanup "$CONF_TARGET"
 
 run_promote "$CONF_TARGET" || fail "promote on clean conf target exited non-zero"
 CONF="$CONF_TARGET/.devcontainer/claude-sandbox.conf"
@@ -273,5 +265,4 @@ else
     fail "promote overwrote user-customised claude-sandbox.conf"
 fi
 
-echo "promote.sh: $PASSED passed / $FAILED failed"
-[ "$FAILED" -eq 0 ]
+finish promote.sh

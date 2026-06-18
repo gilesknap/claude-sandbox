@@ -20,6 +20,10 @@ if [ ! -f "$SHADOW" ]; then
     exit 1
 fi
 
+# Shared assertions + PASS/FAIL counters + register_cleanup.
+# shellcheck source=lib.sh
+source "$REPO_ROOT/tests/lib.sh"
+
 # Pull bwrap_argv_build into scope without running the shadow's launch
 # body. The shadow returns early when CLAUDE_SHADOW_SOURCE_ONLY=1.
 export CLAUDE_SHADOW_SOURCE_ONLY=1
@@ -36,45 +40,6 @@ source "$SHADOW"
 unset VIRTUAL_ENV UV_PROJECT_ENVIRONMENT UV_CACHE_DIR UV_PYTHON_CACHE_DIR \
       PRE_COMMIT_HOME CLAUDE_SANDBOX_WORKSPACE_ROOT CLAUDE_SANDBOX_NO_FORGE \
       CLAUDE_SANDBOX_ALLOW_WRITE CLAUDE_SANDBOX_EGRESS_JAIL CLAUDE_SANDBOX_ALLOW_IP
-
-PASSED=0
-FAILED=0
-
-assert_contains() {
-    # assert_contains <name> <argv> <token>
-    local name="$1" argv="$2" token="$3"
-    if printf '%s\n' "$argv" | grep -qxF -- "$token"; then
-        PASSED=$((PASSED+1))
-    else
-        FAILED=$((FAILED+1))
-        echo "FAIL: $name — missing token: $token" >&2
-        echo "----- argv -----" >&2
-        printf '%s\n' "$argv" >&2
-        echo "----------------" >&2
-    fi
-}
-
-assert_not_contains() {
-    local name="$1" argv="$2" token="$3"
-    if printf '%s\n' "$argv" | grep -qxF -- "$token"; then
-        FAILED=$((FAILED+1))
-        echo "FAIL: $name — unexpected token: $token" >&2
-    else
-        PASSED=$((PASSED+1))
-    fi
-}
-
-assert_pair() {
-    # assert_pair <name> <argv> <flag> <value>  — flag on one line, value
-    # on the next. Catches paired --ro-bind /proc /proc style emissions.
-    local name="$1" argv="$2" flag="$3" value="$4"
-    if printf '%s\n' "$argv" | grep -A1 "^${flag}\$" | grep -qxF -- "$value"; then
-        PASSED=$((PASSED+1))
-    else
-        FAILED=$((FAILED+1))
-        echo "FAIL: $name — expected pair $flag → $value" >&2
-    fi
-}
 
 # --- Scenario 1: vanilla (workspace=/workspaces/foo, $HOME=/root) ---
 unset TERM LANG LC_ALL LC_CTYPE LC_MESSAGES LC_TIME LC_COLLATE LC_NUMERIC LC_MONETARY
@@ -144,7 +109,7 @@ assert_not_contains scenario3 "$ARGV3" "/srv/weird-workspace-path"
 
 # --- Scenario 4: bind-back loop over $HOME (tmpdir-based fixture) ---
 TMPHOME="$(mktemp -d)"
-trap 'rm -rf "$TMPHOME"' EXIT
+register_cleanup "$TMPHOME"
 mkdir -p "$TMPHOME/.claude" "$TMPHOME/.config/gh"
 
 ARGV4a="$(HOME="$TMPHOME" CLAUDE_SANDBOX_GITCONFIG_PATH=/etc/claude-gitconfig \
@@ -220,17 +185,6 @@ assert_contains scenario7-strip "$ARGV7" "--version"
 
 # --- Scenario 8: resolve_workspace_root ---
 # Pure function: priority is env override > /workspaces auto-detect > $PWD.
-
-assert_eq() {
-    local name="$1" expected="$2" actual="$3"
-    if [ "$expected" = "$actual" ]; then
-        PASSED=$((PASSED+1))
-    else
-        FAILED=$((FAILED+1))
-        echo "FAIL: $name — expected '$expected', got '$actual'" >&2
-    fi
-}
-
 unset CLAUDE_SANDBOX_WORKSPACE_ROOT
 
 # Default: $PWD — no auto-promotion to /workspaces.
@@ -309,153 +263,124 @@ ARGV10c="$(HOME="$TMPHOME" CLAUDE_SANDBOX_ALLOW_WRITE="/nonexistent/path" \
     bwrap_argv_build "$TMPHOME" /test/.local/bin/claude)"
 assert_not_contains scenario10-absent "$ARGV10c" "/nonexistent/path"
 
-# --- Scenario 11: parse_config ---
+# --- Scenario 11: parse_config (data-driven) ---
+# Each case writes a conf fixture, then asserts a predicate in a FRESH
+# shadow-sourced bash so parse_config's exports don't leak between cases.
+# SHADOW/TMPCONF are exported so the case bodies can reference them; the
+# bodies are single-quoted, so there is no \"…\" / \$… escaping (the old
+# pain point). egress-jail defaults ON per ADR 0015.
 TMPCONF="$(mktemp)"
-trap 'rm -rf "$TMPHOME" "$TMPCONF"' EXIT
+register_cleanup "$TMPCONF"
+export SHADOW TMPCONF
 
-assert_parse() {
-    local name="$1"; shift
-    if "$@"; then
-        PASSED=$((PASSED+1))
-    else
-        FAILED=$((FAILED+1))
-        echo "FAIL: $name" >&2
-    fi
+# parse_case NAME CONF BODY — write CONF (\n-expanded) to $TMPCONF, then assert
+# BODY exits 0 in a fresh bash that has sourced the shadow.
+parse_case() {
+    local name="$1" conf="$2" body="$3"
+    printf '%b' "$conf" > "$TMPCONF"
+    assert_parse "$name" bash -c 'export CLAUDE_SHADOW_SOURCE_ONLY=1; . "$SHADOW"; '"$body"
 }
 
-# workspace-root
-printf 'workspace-root = /custom/root\n' > "$TMPCONF"
-assert_parse scenario11-workspace-root bash -c "
-    source \"$SHADOW\"
+parse_case scenario11-workspace-root 'workspace-root = /custom/root\n' '
     unset CLAUDE_SANDBOX_WORKSPACE_ROOT
-    parse_config \"$TMPCONF\"
-    [ \"\${CLAUDE_SANDBOX_WORKSPACE_ROOT:-}\" = '/custom/root' ]
-"
+    parse_config "$TMPCONF"
+    [ "${CLAUDE_SANDBOX_WORKSPACE_ROOT:-}" = "/custom/root" ]
+'
 
-# no-forge
-printf 'no-forge\n' > "$TMPCONF"
-assert_parse scenario11-no-forge bash -c "
-    source \"$SHADOW\"
+parse_case scenario11-no-forge 'no-forge\n' '
     unset CLAUDE_SANDBOX_NO_FORGE
-    parse_config \"$TMPCONF\"
-    [ \"\${CLAUDE_SANDBOX_NO_FORGE:-}\" = '1' ]
-"
+    parse_config "$TMPCONF"
+    [ "${CLAUDE_SANDBOX_NO_FORGE:-}" = "1" ]
+'
 
-# allow-write single path
-printf 'allow-write = /some/path\n' > "$TMPCONF"
-assert_parse scenario11-allow-write-single bash -c "
-    source \"$SHADOW\"
+parse_case scenario11-allow-write-single 'allow-write = /some/path\n' '
     unset CLAUDE_SANDBOX_ALLOW_WRITE
-    parse_config \"$TMPCONF\"
-    [ \"\${CLAUDE_SANDBOX_ALLOW_WRITE:-}\" = '/some/path' ]
-"
+    parse_config "$TMPCONF"
+    [ "${CLAUDE_SANDBOX_ALLOW_WRITE:-}" = "/some/path" ]
+'
 
-# allow-write multiple paths
-printf 'allow-write = /path/one\nallow-write = /path/two\n' > "$TMPCONF"
-assert_parse scenario11-allow-write-multi bash -c "
-    source \"$SHADOW\"
+parse_case scenario11-allow-write-multi 'allow-write = /path/one\nallow-write = /path/two\n' '
     unset CLAUDE_SANDBOX_ALLOW_WRITE
-    parse_config \"$TMPCONF\"
-    printf '%s\n' \"\$CLAUDE_SANDBOX_ALLOW_WRITE\" | grep -qxF '/path/one' &&
-    printf '%s\n' \"\$CLAUDE_SANDBOX_ALLOW_WRITE\" | grep -qxF '/path/two'
-"
+    parse_config "$TMPCONF"
+    printf "%s\n" "$CLAUDE_SANDBOX_ALLOW_WRITE" | grep -qxF "/path/one" &&
+    printf "%s\n" "$CLAUDE_SANDBOX_ALLOW_WRITE" | grep -qxF "/path/two"
+'
 
 # egress-jail ON by default (ADR 0015): absent from conf + unset env => enabled
-printf 'no-forge\n' > "$TMPCONF"
-assert_parse scenario11-egress-jail-default-on bash -c "
-    source \"$SHADOW\"
+parse_case scenario11-egress-jail-default-on 'no-forge\n' '
     unset CLAUDE_SANDBOX_EGRESS_JAIL
-    parse_config \"$TMPCONF\"
+    parse_config "$TMPCONF"
     egress_jail_enabled
-"
+'
 
 # a bare `egress-jail` key reaffirms on
-printf 'egress-jail\n' > "$TMPCONF"
-assert_parse scenario11-egress-jail-bare bash -c "
-    source \"$SHADOW\"
+parse_case scenario11-egress-jail-bare 'egress-jail\n' '
     unset CLAUDE_SANDBOX_EGRESS_JAIL
-    parse_config \"$TMPCONF\"
-    [ \"\${CLAUDE_SANDBOX_EGRESS_JAIL:-}\" = '1' ] && egress_jail_enabled
-"
+    parse_config "$TMPCONF"
+    [ "${CLAUDE_SANDBOX_EGRESS_JAIL:-}" = "1" ] && egress_jail_enabled
+'
 
 # `egress-jail = 0` in conf disables the jail
-printf 'egress-jail = 0\n' > "$TMPCONF"
-assert_parse scenario11-egress-jail-conf-off bash -c "
-    source \"$SHADOW\"
+parse_case scenario11-egress-jail-conf-off 'egress-jail = 0\n' '
     unset CLAUDE_SANDBOX_EGRESS_JAIL
-    parse_config \"$TMPCONF\"
-    [ \"\${CLAUDE_SANDBOX_EGRESS_JAIL:-}\" = '0' ] && ! egress_jail_enabled
-"
+    parse_config "$TMPCONF"
+    [ "${CLAUDE_SANDBOX_EGRESS_JAIL:-}" = "0" ] && ! egress_jail_enabled
+'
 
 # env CLAUDE_SANDBOX_EGRESS_JAIL=0 wins over a bare conf `egress-jail`
-printf 'egress-jail\n' > "$TMPCONF"
-assert_parse scenario11-egress-jail-env-off-wins bash -c "
-    source \"$SHADOW\"
+parse_case scenario11-egress-jail-env-off-wins 'egress-jail\n' '
     export CLAUDE_SANDBOX_EGRESS_JAIL=0
-    parse_config \"$TMPCONF\"
-    [ \"\$CLAUDE_SANDBOX_EGRESS_JAIL\" = '0' ] && ! egress_jail_enabled
-"
+    parse_config "$TMPCONF"
+    [ "$CLAUDE_SANDBOX_EGRESS_JAIL" = "0" ] && ! egress_jail_enabled
+'
 
 # the predicate's default-on holds with no conf parsed at all
-assert_parse scenario11-egress-jail-predicate-default bash -c "
-    source \"$SHADOW\"
+parse_case scenario11-egress-jail-predicate-default '' '
     unset CLAUDE_SANDBOX_EGRESS_JAIL
     egress_jail_enabled
-"
+'
 
 # allow-ip single
-printf 'allow-ip = 172.23.1.2\n' > "$TMPCONF"
-assert_parse scenario11-allow-ip-single bash -c "
-    source \"$SHADOW\"
+parse_case scenario11-allow-ip-single 'allow-ip = 172.23.1.2\n' '
     unset CLAUDE_SANDBOX_ALLOW_IP
-    parse_config \"$TMPCONF\"
-    [ \"\${CLAUDE_SANDBOX_ALLOW_IP:-}\" = '172.23.1.2' ]
-"
+    parse_config "$TMPCONF"
+    [ "${CLAUDE_SANDBOX_ALLOW_IP:-}" = "172.23.1.2" ]
+'
 
 # allow-ip multiple, accumulated newline-separated
-printf 'allow-ip = 172.23.1.2\nallow-ip = 10.0.5.6\n' > "$TMPCONF"
-assert_parse scenario11-allow-ip-multi bash -c "
-    source \"$SHADOW\"
+parse_case scenario11-allow-ip-multi 'allow-ip = 172.23.1.2\nallow-ip = 10.0.5.6\n' '
     unset CLAUDE_SANDBOX_ALLOW_IP
-    parse_config \"$TMPCONF\"
-    printf '%s\n' \"\$CLAUDE_SANDBOX_ALLOW_IP\" | grep -qxF '172.23.1.2' &&
-    printf '%s\n' \"\$CLAUDE_SANDBOX_ALLOW_IP\" | grep -qxF '10.0.5.6'
-"
+    parse_config "$TMPCONF"
+    printf "%s\n" "$CLAUDE_SANDBOX_ALLOW_IP" | grep -qxF "172.23.1.2" &&
+    printf "%s\n" "$CLAUDE_SANDBOX_ALLOW_IP" | grep -qxF "10.0.5.6"
+'
 
 # allow-ip with empty value is skipped (no trailing blank entry)
-printf 'allow-ip =\n' > "$TMPCONF"
-assert_parse scenario11-allow-ip-empty bash -c "
-    source \"$SHADOW\"
+parse_case scenario11-allow-ip-empty 'allow-ip =\n' '
     unset CLAUDE_SANDBOX_ALLOW_IP
-    parse_config \"$TMPCONF\"
-    [ -z \"\${CLAUDE_SANDBOX_ALLOW_IP:-}\" ]
-"
+    parse_config "$TMPCONF"
+    [ -z "${CLAUDE_SANDBOX_ALLOW_IP:-}" ]
+'
 
 # comments and blank lines are ignored
-printf '# comment\n\nworkspace-root = /from/conf\n# another\n' > "$TMPCONF"
-assert_parse scenario11-comments bash -c "
-    source \"$SHADOW\"
+parse_case scenario11-comments '# comment\n\nworkspace-root = /from/conf\n# another\n' '
     unset CLAUDE_SANDBOX_WORKSPACE_ROOT
-    parse_config \"$TMPCONF\"
-    [ \"\${CLAUDE_SANDBOX_WORKSPACE_ROOT:-}\" = '/from/conf' ]
-"
+    parse_config "$TMPCONF"
+    [ "${CLAUDE_SANDBOX_WORKSPACE_ROOT:-}" = "/from/conf" ]
+'
 
 # env var wins over config file value
-printf 'workspace-root = /from/config\n' > "$TMPCONF"
-assert_parse scenario11-env-wins bash -c "
-    source \"$SHADOW\"
+parse_case scenario11-env-wins 'workspace-root = /from/config\n' '
     export CLAUDE_SANDBOX_WORKSPACE_ROOT=/from/env
-    parse_config \"$TMPCONF\"
-    [ \"\${CLAUDE_SANDBOX_WORKSPACE_ROOT:-}\" = '/from/env' ]
-"
+    parse_config "$TMPCONF"
+    [ "${CLAUDE_SANDBOX_WORKSPACE_ROOT:-}" = "/from/env" ]
+'
 
 # absent config file is silently skipped
-assert_parse scenario11-absent bash -c "
-    source \"$SHADOW\"
+parse_case scenario11-absent '' '
     unset CLAUDE_SANDBOX_WORKSPACE_ROOT
-    parse_config '/nonexistent/claude-sandbox.conf'
-    [ -z \"\${CLAUDE_SANDBOX_WORKSPACE_ROOT:-}\" ]
-"
+    parse_config "/nonexistent/claude-sandbox.conf"
+    [ -z "${CLAUDE_SANDBOX_WORKSPACE_ROOT:-}" ]
+'
 
-echo "bwrap_argv.sh: $PASSED passed / $FAILED failed"
-[ "$FAILED" -eq 0 ]
+finish bwrap_argv.sh
