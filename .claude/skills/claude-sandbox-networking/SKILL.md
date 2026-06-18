@@ -80,13 +80,18 @@ pasta spawns a pid+mount ns it can't give bwrap a usable `/proc` for → bwrap
 aborts on `/proc/<pid>` lookups; remount is EPERM (kernel proc-mount restriction).
 Design D flips ns ownership (holder = user+net only → `/proc` valid).
 
-**SECURITY rests on userns ownership, NOT caplessness.** Claude is NOT capless
-here — bwrap nests its userns inside the holder's, so `CapBnd` is FULL
-(`…1ffffffffff`). Contained because the netns/routes are owned by the holder's
-ANCESTOR userns: verified that route del/punch + device-add all EPERM and RFC1918
-stays blocked. Consequence: `CapBnd=0` integrity checks (`sandbox-verify.sh`,
-`/verify-sandbox`) need a **jail-aware variant** (assert route-immutability, not
-CapBnd=0, when the jail is on).
+**SECURITY rests on userns ownership + effective-cap drop.** Distinguish two cap
+sets: `CapEff` (effective, active) is **0** in the jail — bwrap's `--cap-drop ALL`
+empties it even in the nested userns — while `CapBnd` (the bounding *ceiling*) is
+FULL (`…1ffffffffff`, a nested-userns artifact, vs 0 in the non-jail sandbox).
+Route-immutability holds because the netns/routes are owned by the holder's
+ANCESTOR userns (caps raised inside Claude's own userns don't reach it): verified
+route del/punch + device-add all EPERM, RFC1918 stays blocked.
+**verify-sandbox needs NO jail-aware variant** — check 06 asserts `CapEff=0` (not
+CapBnd), which holds; the full 18-check battery passes live in a jailed session.
+Residual diligence (not a blocker): confirm the higher `CapBnd` ceiling can't be
+re-raised inside Claude's userns to weaken another bwrap protection (e.g. remount
+a `--ro-bind` rw) — see `probe-network-jail-caps.sh`.
 
 **Structure:** the setup is an inlined `netns_setup()` *inside* `claude-shadow`,
 NOT a sourced module — preserves the single-file auditability ADR 0014 / 0008 rest
@@ -99,12 +104,14 @@ binary both green on a real rootless host: `CLAUDE_SANDBOX_EGRESS_JAIL=1 claude
 `claude-shadow` (`parse_config` `egress-jail`/`allow-ip` keys + inlined
 `netns_holder`/`netns_launch`), opt-in via `/etc/claude-sandbox.conf`. Requires
 `/dev/net/tun` (`devcontainer.json` runArgs `--device=/dev/net/tun`) — the one
-hard container-side dep; fail-closed if pasta/unshare/tun missing. STILL PENDING:
-jail-aware `/verify-sandbox`+`sandbox-verify.sh` (CapBnd=0 won't hold when jail
-on); interactive-TUI confirmation of the `<&0` stdin path; `install.sh` could
-`apt-get install passt`. Ceiling: a bwrap *escape* could re-plumb — a layer
-*beneath* the bwrap wall, never stronger. CA broadcast for Claude is gone →
-unicast `EPICS_CA_ADDR_LIST`.
+hard container-side dep; fail-closed if pasta/unshare/tun missing. Interactive
+`claude` + `/verify-sandbox` both confirmed live in a jailed session (18/18 pass
+— check 06 asserts `CapEff=0`, which holds). STILL PENDING (see phase-2 plan in
+[[network-egress-pasta-jail-wip]]): cap-ceiling diligence probe; `install.sh`
+`apt-get install passt`; commit the CapEff/CapBnd doc corrections; #56 update +
+branch push/PR. Ceiling: a bwrap *escape* could re-plumb — a layer *beneath* the
+bwrap wall, never stronger. CA broadcast for Claude is gone → unicast
+`EPICS_CA_ADDR_LIST`.
 
 **Network-mode-agnostic + intentional blackholing.** Design D builds Claude's
 netns INSIDE the container and pasta mirrors the container's OWN connectivity, so

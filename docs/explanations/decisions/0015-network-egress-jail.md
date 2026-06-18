@@ -119,14 +119,18 @@ Two structural choices fix scope:
 - **`HTTPS_PROXY`-style env proxy is explicitly not the mechanism** (issue #31
   Option D): a hostile process unsets the env var or opens a raw socket. The
   control is enforced by ancestor-owned netns + kernel routing, not by environment.
-- **`CapBnd=0` no longer holds inside the jail.** The nested userns gives Claude
-  a full cap set, so any integrity check that asserts caplessness as proof of the
-  sandbox (`sandbox-verify.sh`, `/verify-sandbox`) needs a **jail-aware variant**:
-  when the jail is on, assert route-immutability (the `EPERM` battery above)
-  instead of `CapBnd=0`. The non-jail path keeps asserting `CapBnd=0`. Full caps
-  in Claude's *own* userns also warrant a check that no *other* bwrap protection
-  (mount/ns operations within Claude's userns) is weakened — to confirm during
-  implementation.
+- **Integrity checks still pass in the jail — no jail-aware variant needed.**
+  `/verify-sandbox` check 06 (and `sandbox-verify.sh`) assert **`CapEff=0`** (the
+  *effective* set), not `CapBnd`. bwrap's `--cap-drop ALL` empties the effective
+  set even inside the nested userns, so `CapEff=0` holds and the full 18-check
+  battery passes in a jailed session (verified live). What differs from the
+  non-jail sandbox is only the **`CapBnd` ceiling** — `…1ffffffffff` in the jail
+  vs `0` non-jail, a nested-userns artifact. Effective caps are zero, so nothing
+  is active; route-immutability additionally holds via ancestor-userns ownership.
+  Residual diligence (not a blocker): confirm the higher `CapBnd` ceiling can't be
+  *re-raised* inside Claude's own userns to weaken another bwrap protection (e.g.
+  remounting a `--ro-bind` rw) — locked-mount semantics should prevent it; see
+  `probe-network-jail-caps.sh`.
 - **Hostname allowlists stay out of scope for Cohort B.** Native `allowedDomains`
   cannot express bare-IP/UDP/dynamic-port device traffic; Cohort A / dual-sandbox
   remains issue #33.
