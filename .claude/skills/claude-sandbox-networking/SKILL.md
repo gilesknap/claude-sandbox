@@ -132,7 +132,18 @@ egress. `netns_setup()` MUST detect the default next-hop and PIN a more-specific
 route to it FIRST: **protect-gateway → blackhole-the-rest → punch allow-ip.**
 UNPROVEN until probed in a NON-host (bridge) container: (a) nested pasta
 (inner pasta inside an outer-pasta'd container); (b) the gateway-collision
-behaviour. Run `probe-network-jail.sh` in a bridge container, not just host.
+behaviour. **A bridge container = the devcontainer with `--net=host` REMOVED**
+(comment `.devcontainer/devcontainer.json` runArgs line `--net=host`; KEEP
+`--device=/dev/net/tun`), then rebuild and run `probe-network-jail.sh` from a
+normal (unjailed) terminal — revert + rebuild afterwards (the dogfood box needs
+host-net for X11 + EPICS CA). Throwaway alternative that leaves the devcontainer
+alone: `podman run --rm -it --device=/dev/net/tun -v "$PWD/probe-network-jail.sh:/probe.sh:ro" <devcontainer-image> bash -lc 'apt-get update -qq && apt-get install -y -qq passt bubblewrap iproute2 util-linux && bash /probe.sh'`.
+EXPECT: the `[holder]` line shows an RFC1918 gateway (podman `10.88.0.1`, docker
+`172.17.0.1`); `PASS internet routed via gateway` + connectivity PASS = proof
+that the `$gw/32` on-link route was pinned BEFORE `blackhole 10/8` survived
+egress; RFC1918 + same-subnet still blocked. The ONE code-change trigger: holder
+logs `no default via/dev` → exits 4 = the dev-only-default edge (a default route
+with no `via <gw>`), to be handled then. Only `--network=host` tested so far.
 
 ## Refuse / don't re-derive
 
