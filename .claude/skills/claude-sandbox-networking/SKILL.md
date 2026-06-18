@@ -105,8 +105,8 @@ protection. Even with a full *effective* cap set gained via a child `unshare
 -rUm` userns, remount-rw `/`, bind-over a `--ro-bind` path, and `sethostname` all
 `EPERM` — bwrap's locked mounts are immutable from a descendant userns. Inert.
 
-**Structure:** the setup is an inlined `netns_setup()` *inside* `claude-shadow`,
-NOT a sourced module — preserves the single-file auditability ADR 0014 / 0008 rest
+**Structure:** the setup is inlined as `netns_launch()` / `netns_holder()` (+ the
+`egress_jail_enabled` predicate) *inside* `claude-shadow`, NOT a sourced module — preserves the single-file auditability ADR 0014 / 0008 rest
 on. Revisit extraction (its own ADR) only if the net code outgrows the shadow.
 
 **STATUS — IMPLEMENTED + END-TO-END VALIDATED (2026-06-18).** Probe + real
@@ -123,10 +123,11 @@ escape hatch), never a silent unjailed fallback. Interactive
 `claude` + `/verify-sandbox` both confirmed live in a jailed session (18/18 pass
 — check 06 asserts `CapEff=0`, which holds). Phase-2 landed on **PR #58** (refs
 #56): `install.sh` installs `passt`; CapEff/CapBnd doc corrections; cap-ceiling
-diligence probe written + PASSED unjailed (full `CapBnd` inert). STILL PENDING
-(see [[network-egress-pasta-jail-wip]]): run `probe-network-jail.sh` in a
-**bridge/NAT** container — only `--network=host` tested so far, so the
-gateway-collision + nested-pasta paths stay unproven. Ceiling: a bwrap *escape*
+diligence probe written + PASSED unjailed (full `CapBnd` inert). Bridge/NAT now
+**VALIDATED** (see [[network-egress-pasta-jail-wip]]): `probe-network-jail.sh`
+run in a **bridge/NAT** container proves the gateway-collision + nested-pasta
+paths (the RFC1918 gateway is pinned on-link before the blackhole; egress works,
+RFC1918 + same-subnet still blocked). Ceiling: a bwrap *escape*
 could re-plumb — a layer *beneath* the bwrap wall, never stronger. CA broadcast for Claude is gone → unicast
 `EPICS_CA_ADDR_LIST`.
 
@@ -141,11 +142,12 @@ host-`devcontainer.json` edits, so `install` must detect + error with
 instructions either way. **Blackholing must be intentional** — CRITICAL in
 non-host containers where the egress gateway is itself RFC1918 (or link-local
 `169.254.x.x`): blackholing those ranges can sever the default route and kill ALL
-egress. `netns_setup()` MUST detect the default next-hop and PIN a more-specific
-route to it FIRST: **protect-gateway → blackhole-the-rest → punch allow-ip.**
-UNPROVEN until probed in a NON-host (bridge) container: (a) nested pasta
-(inner pasta inside an outer-pasta'd container); (b) the gateway-collision
-behaviour. **A bridge container = the devcontainer with `--net=host` REMOVED**
+egress. `netns_holder()` detects the default next-hop and pins a more-specific
+route to it FIRST: **protect-gateway → blackhole-the-rest → punch allow-ip** (implemented).
+PROVEN in a NON-host (bridge) container (validated 2026-06-18): (a) nested pasta
+(inner pasta inside an outer-pasta'd container) works; (b) the gateway-collision
+behaviour is handled (gateway pinned on-link first). To reproduce: **a bridge
+container = the devcontainer with `--net=host` REMOVED**
 (comment `.devcontainer/devcontainer.json` runArgs line `--net=host`; KEEP
 `--device=/dev/net/tun`), then rebuild and run `probe-network-jail.sh` from a
 normal (unjailed) terminal — revert + rebuild afterwards (the dogfood box needs
@@ -156,7 +158,8 @@ EXPECT: the `[holder]` line shows an RFC1918 gateway (podman `10.88.0.1`, docker
 that the `$gw/32` on-link route was pinned BEFORE `blackhole 10/8` survived
 egress; RFC1918 + same-subnet still blocked. The ONE code-change trigger: holder
 logs `no default via/dev` → exits 4 = the dev-only-default edge (a default route
-with no `via <gw>`), to be handled then. Only `--network=host` tested so far.
+with no `via <gw>`), to be handled then. Both `--network=host` and bridge/NAT are
+now validated.
 
 ## Refuse / don't re-derive
 
@@ -199,5 +202,5 @@ with no `via <gw>`), to be handled then. Only `--network=host` tested so far.
 | Threat + options A–D (superseded by #56) | issue **#31** (closed) |
 | Native dual-sandbox / Cohort A | issue **#33** (open) |
 | Egress-open decision / scope | ADRs `0005-network-egress-open`, `0002-credential-isolation-tool` |
-| Feasibility probes (embedded in #56, untracked at repo root) | `probe-network-egress.sh` (full pasta egress) + `probe-network-layers.sh` (splits tun-INDEPENDENT core from tun-DEPENDENT forwarder) — run UNJAILED |
-| Where `netns_setup()` (holder + pasta attach + route lock) goes — inlined, not yet implemented | `.devcontainer/claude-sandbox/claude-shadow` (bwrap KEEPS omitting `--unshare-net`; the holder owns the netns) |
+| Feasibility / route-immutability probes (now tracked under `diagnostics/`) | `diagnostics/probe-network-jail.sh` (full pasta egress + route-immutability battery), `diagnostics/probe-network-jail-caps.sh` (cap-ceiling diligence), `diagnostics/probe-network-layers.sh` (splits tun-INDEPENDENT core from tun-DEPENDENT forwarder) — run UNJAILED |
+| Egress-jail code (holder + pasta attach + route lock) — inlined, **implemented + on by default** | `.devcontainer/claude-sandbox/claude-shadow`: `egress_jail_enabled` predicate, `netns_launch()` orchestrator, `netns_holder()` (bwrap KEEPS omitting `--unshare-net`; the holder owns the netns) |

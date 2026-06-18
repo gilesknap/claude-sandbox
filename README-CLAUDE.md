@@ -81,7 +81,7 @@ Claude. The deliberate exposures:
 | Path | Mode | Why |
 |---|---|---|
 | Workspace | rw | The whole point of Claude — see [workspace visibility caveat](#workspace-visibility-caveat) below. Default: `$PWD` (only the current project is writable). Override: set `CLAUDE_SANDBOX_WORKSPACE_ROOT=/workspaces` in `remoteEnv` to restore the old broad bind and make sibling devcontainer projects writable. Extra paths: `allow-write = <abs-path>` lines in `/etc/claude-sandbox.conf` (one path per line; blank lines and `#` comments ignored) |
-| `/etc/claude-sandbox.conf` | r | Host-global sandbox config (`workspace-root`, `no-forge`, `allow-write`), placed by `install.sh` from the clone's `.devcontainer/claude-sandbox.conf` and read by the shadow at launch. Lives at `/etc`, **not** in the rw-bound workspace, so a compromised session can't rewrite it to widen the next launch's binds. Edit the clone conf + re-run `./install` (a rebuild does it via postCreate) to change it |
+| `/etc/claude-sandbox.conf` | r | Host-global sandbox config (`workspace-root`, `no-forge`, `allow-write`, `egress-jail`, `allow-ip`), placed by `install.sh` from the clone's `.devcontainer/claude-sandbox.conf` and read by the shadow at launch. Lives at `/etc`, **not** in the rw-bound workspace, so a compromised session can't rewrite it to widen the next launch's binds (or, with `allow-ip`, its network reach). Edit the clone conf + re-run `./install` (a rebuild does it via postCreate) to change it |
 | `/etc/claude-gitconfig` | r | Curated gitconfig: gh/glab credential helpers for `https://github.com` and `https://gitlab.diamond.ac.uk`, ssh→https `insteadOf` rewrites, regenerated at every shadow launch from your host's current `user.name`/`user.email` |
 | `/etc/gitconfig` | r | Host's system gitconfig is reachable read-only but neutralised for `git` because `GIT_CONFIG_SYSTEM=/dev/null` — see [gitconfig defence-in-depth](#gitconfig-defence-in-depth) |
 | `/root/.claude/` | rw | Claude's state, settings, skills, hooks. `install.sh` symlinks this to `/user-terminal-config/.claude` so the tree persists across rebuilds and is shared with every other devcontainer that mounts the same `terminal-config` dir |
@@ -91,7 +91,7 @@ Claude. The deliberate exposures:
 | `/root/.config/glab-cli/` | rw | `glab` CLI's token store. Same reason as `gh`. Sibling paths under `/root/.config/` (VS Code state, other cred helpers, etc.) are NOT bound |
 | `/root/.local/share/` + single files `/root/.local/bin/{uv,uvx}` | rw | Bulk-bound XDG data dir: host-installed plugins for `helm`, `kubectl`/`krew`, `uv`-managed Python, etc. just work inside the sandbox without per-tool allowlist additions. `applications/` and `claude/` are tmpfs-masked so Claude Code's own writes (URL handler `.desktop`, versioned binary cache) stay ephemeral. `.config/` stays strict-allowlist — credentials live there, not under `.local/share/`. See [XDG split rationale](#xdg-split-rationale) and [uv bind discipline](#uv-bind-discipline) |
 | `/usr/libexec/claude-sandbox/claude` | r | The real Claude binary, relocated here by the installer from `~/.local/bin/claude` so plain `claude` on the user's PATH always resolves to the shadow. The shadow exec's this same file via `bwrap`; a bind back to `~/.local/bin/claude` inside the sandbox keeps Claude Code's `installMethod=native` self-check happy |
-| Network (`--share-net`) | — | Claude needs `api.anthropic.com` + GitHub/GitLab. See [network-identity disclosure](#network-identity-disclosure) |
+| Network (egress jail, ADR 0015) | — | Claude reaches `api.anthropic.com` + GitHub/GitLab and configured `allow-ip` devices; the egress jail blackholes RFC1918 so a compromised session can't pivot to internal hosts. `CLAUDE_SANDBOX_EGRESS_JAIL=0` restores the shared host netns. See [network-identity disclosure](#network-identity-disclosure) |
 
 ### Workspace visibility caveat
 
@@ -178,16 +178,23 @@ at $HOME.
 <details>
 <summary id="network-identity-disclosure">Network-identity disclosure</summary>
 
-Because the network namespace is shared with the host, Claude can
-enumerate the host's interface addresses, routing table, and DNS
-resolver via `AF_NETLINK` / standard tooling (`ip addr`, `ip
-route`, `/etc/resolv.conf`). This is network-identity disclosure,
-not credential exfil — but it means the sandbox is visible to
-internal services on the same host network. Don't run a local
-metadata-style credential service on the loopback or RFC1918 of a
-host that also runs `claude` unless you're OK with Claude reaching
-it. `/verify-sandbox` flags this as an `[INCONCLUSIVE]` adversarial
-probe so it stays on the radar.
+With the default egress jail (ADR 0015) Claude runs in a *private*
+network namespace: pasta mirrors only the host address, the
+connected-subnet route, the gateway, and the DNS resolvers into it,
+and the routing allowlist blackholes RFC1918 — so Claude cannot reach
+internal services on the host network, and what it sees is the jail's
+own mirrored L3 config, not the host's full network identity.
+
+Under the escape hatch (`CLAUDE_SANDBOX_EGRESS_JAIL=0`) the host
+network namespace is shared, so Claude can enumerate the host's
+interface addresses, routing table, and DNS resolver via `AF_NETLINK`
+/ standard tooling (`ip addr`, `ip route`, `/etc/resolv.conf`) and is
+visible to — and can reach — internal services on the same host
+network. Either way this is network-identity disclosure, not credential
+exfil; on the `=0` path, don't run a local metadata-style credential
+service on the loopback or RFC1918 of a host that also runs `claude`
+unless you're OK with Claude reaching it. `/verify-sandbox` flags this
+as an `[INCONCLUSIVE]` adversarial probe so it stays on the radar.
 
 </details>
 
@@ -284,14 +291,17 @@ ones with no project `.claude/`) and **cannot be removed by editing
 The hook entries (in `/etc`) and the scripts (in `/usr/libexec`) both
 sit outside the sandbox's rw set and outside the user-editable
 `~/.claude`, so neither a compromised in-session Claude nor an
-accidental settings edit can disable them. See [Keeping the shadow on
-PATH](./README.md#keeping-the-shadow-on-path) for why this lives in the
-managed layer and why the installer disables the auto-updater.
+accidental settings edit can disable them. See the [integrity guard explanation](https://gilesknap.github.io/claude-sandbox/explanations/integrity-guard.html)
+for why this lives in the managed layer and why the installer disables the
+auto-updater.
 
 ## What's installed
 
 Container-scoped — re-established by re-running `./install`,
-typically wired into `postCreate.sh`:
+typically wired into `postCreate.sh`. The apt step also installs `passt`
+(which provides `pasta`, the userspace forwarder the default egress jail
+attaches to Claude's private netns; its matching `--device=/dev/net/tun` is a
+`devcontainer.json` runArg the installer cannot add):
 
 | Path | Source | Purpose |
 |---|---|---|

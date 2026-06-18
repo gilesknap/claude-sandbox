@@ -9,7 +9,10 @@ the supported runtime; rootless Docker works too). A hostile prompt, file, or
 tool result cannot reach your host credentials, IDE bridges, or shell
 environment. The protection is launch-time: plain `claude` resolves to a shadow
 that wraps the real binary in `bwrap`, and a global integrity guard fails loud
-and closed if it is ever launched unwrapped.
+and closed if it is ever launched unwrapped. By default Claude also runs in a
+per-process egress jail (ADR 0015) that blackholes RFC1918 internal networks, so
+a compromised session can't pivot sideways to internal hosts or lab devices while
+the internet, DNS, and configured `allow-ip` devices stay reachable.
 
 ## How the documentation is structured
 
@@ -47,7 +50,8 @@ reference
 :::
 
 :::{grid-item-card} {material-regular}`menu_book;2em` Explanations
-The why behind the design: threat model and sandbox rationale.
+The why behind the design: threat model, sandbox rationale, and the network
+egress jail.
 
 ```{toctree}
 :maxdepth: 2

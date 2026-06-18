@@ -14,7 +14,7 @@ bwrap primitives fit together to enforce all this, see
 The adversary is not the developer. It is an **LLM-driven attack** riding on
 input the developer did not write: a hostile prompt, a hostile file Claude is
 asked to read, or a hostile tool result. Any of these can attempt to steer
-Claude's tools toward three goals:
+Claude's tools toward four goals:
 
 - **Credential exfiltration** — reading host secrets (env vars, dotfiles,
   token stores, IPC sockets) and shipping them out.
@@ -22,6 +22,12 @@ Claude's tools toward three goals:
   sockets that connect the devcontainer to the editor and the host desktop.
 - **Privilege escalation inside the devcontainer** — setuid tricks, capability
   abuse, ptrace/kill against neighbouring processes, terminal injection.
+- **Lateral network movement** — using the host's network reach to pivot to
+  internal RFC1918 hosts, the `169.254.169.254` metadata endpoint, or lab devices
+  reachable by bare IP with default credentials (EPICS IOCs, PMAC motion
+  controllers — where a hostile session reaching a PMAC is a *safety* incident,
+  not just an information one). This is the threat the default
+  [egress jail](#the-egress-jail-and-the-native-sandbox) closes.
 
 Each defence in the [locked-down table](../reference/locked-down-defences.md)
 maps one-to-one onto an *observed* path for one of those goals and the bwrap
@@ -60,20 +66,25 @@ rationale matters:
   exploit is a different class of problem. This tool isolates credentials; it
   does not claim to contain arbitrary native code. The devcontainer host is the
   trust boundary, and keeping the kernel patched is the operator's job.
-- **Network egress filtering** is out of scope because Claude needs the network
-  and the sandbox deliberately shares the host network namespace (see
-  [deliberately exposed](../reference/deliberately-exposed.md)). There is no
-  per-process firewall here; if you need egress filtering, put the *whole
-  devcontainer* behind one.
+- **Lateral network movement to internal hosts** is now *in scope* and addressed
+  by default: the egress jail ({ref}`adr-network-egress-jail`, on by default)
+  runs Claude in a per-process network namespace that blackholes RFC1918, so a
+  compromised session cannot pivot to internal LANs or lab devices. What remains
+  *out of scope* is **internet-domain / exfil filtering** — restricting *which*
+  outbound domains Claude reaches, or stopping a session POSTing data to a
+  permitted destination. A hostname allowlist is Claude Code's native sandbox's
+  job (`allowedDomains`); a DLP boundary belongs at the devcontainer edge. See
+  [the egress jail and the native sandbox](#the-egress-jail-and-the-native-sandbox)
+  below.
 - **Non-standard credential paths** are out of scope as a guarantee because the
   installer can warn about odd mounts it sees at install time but cannot
   enumerate every custom bind. Auditing your devcontainer's `mounts` block is
   yours.
 
-The throughline: the sandbox promises credential isolation against an
-LLM-driven attacker. Where a promise would be dishonest — kernel exploits,
-egress control, mounts the installer never saw — it is named as out of scope
-rather than implied.
+The throughline: the sandbox promises **credential isolation** and **lateral
+network isolation** against an LLM-driven attacker. Where a promise would still
+be dishonest — kernel exploits, internet-domain / exfil control, mounts the
+installer never saw — it is named as out of scope rather than implied.
 
 ## What is deliberately exposed, and why
 
@@ -93,6 +104,12 @@ consistent across them:
 - The **curated gitconfig** and the host **system gitconfig** are exposed
   read-only, the latter neutralised for `git` itself via
   `GIT_CONFIG_SYSTEM=/dev/null`.
+- **Internet egress** (`api.anthropic.com`, the forges, package registries) is
+  reachable because Claude needs it — but only the internet, DNS, and explicitly
+  `allow-ip`-listed devices: the egress jail
+  ([below](#the-egress-jail-and-the-native-sandbox)) blackholes the internal
+  RFC1918 network by default, so this exposure does not extend to lateral
+  movement onto internal hosts.
 
 The governing principle is *minimum necessary exposure with a forward-compatible
 default*: `~/.config/` keeps a strict two-entry allowlist because credentials
@@ -155,3 +172,57 @@ in `remoteEnv` skips the `gh`/`glab` binds and strips the credential helpers
 from the generated gitconfig, so `git push` fails by design. The exact
 mechanism and how to set it are in
 [deliberately exposed](../reference/deliberately-exposed.md).
+
+## The egress jail and the native sandbox
+
+Credential isolation answers *what can a compromised session read?* The egress
+jail answers a second question — *what can it reach?* — and as of 2026-06-18 it
+is on by default. The threat is **lateral movement, not exfiltration**: bwrap
+already hides the credentials, so the asset worth protecting is *network reach*.
+Without the jail, a prompt-injected session that shares the host network
+namespace can probe RFC1918, hit `169.254.169.254`, and — the incident that
+motivates this — reach lab devices with default credentials (EPICS IOCs, PMAC). Reaching a PMAC is a
+*safety* incident, not merely an information one.
+
+The jail ({ref}`adr-network-egress-jail`) runs *only* Claude in a per-process
+network namespace beneath bwrap. A routing allowlist blackholes `10/8`,
+`172.16/12`, `192.168/16`, the connected subnet, and link-local `169.254/16`,
+leaving the internet, DNS, and the device IPs you list as `allow-ip` reachable —
+so Claude still works while a compromised session has nowhere internal to pivot.
+It is **fail-closed**: if `/dev/net/tun`, pasta, or `unshare` is unavailable,
+`claude` refuses to launch rather than silently fall back to open egress. The
+escape hatch `CLAUDE_SANDBOX_EGRESS_JAIL=0` (env, or `egress-jail = 0` in
+`/etc/claude-sandbox.conf`) restores the older shared-host-netns world of
+{ref}`adr-network-egress-open`. Normal, non-Claude shells keep host networking
+untouched. The operational recipe — adding the required `--device=/dev/net/tun`,
+allow-listing a device, or turning the jail off — is in
+[Configure the network egress jail](../how-to/network-egress-jail.md); the config
+keys are in [configuration](../reference/configuration.md).
+
+### Meshing with Claude Code's native sandbox
+
+This tool is not an alternative to Claude Code's own sandbox — they are
+composable layers covering different surfaces, and the strongest posture runs
+both.
+
+- **`claude-sandbox` (this repo)** provides two things: **credential protection**
+  (the bwrap bind model — env scrubbing, the strict-under-`$HOME` inversion,
+  masked IPC/runtime sockets) and **sideways / lateral network isolation** (the
+  egress jail blackholes RFC1918 so a compromised session cannot pivot to
+  internal hosts or lab devices). It does *not* restrict *which* internet domains
+  Claude reaches.
+- **Claude Code's native sandbox** provides the complementary surface —
+  **internet domain isolation** (an `allowedDomains` allowlist enforced by an SNI
+  proxy), restricting outbound HTTPS to named hosts. It does *not* express
+  bare-IP / UDP / dynamic-port lab-device traffic, and it does not provide this
+  repo's credential-bind model.
+
+The two mesh: credential isolation + lateral isolation (this tool) + internet
+domain allowlisting (native) is defence in depth across complementary surfaces —
+three layers, not three alternatives. The cohort framing in
+{ref}`adr-network-egress-jail` makes the division concrete. **Cohort A** needs
+HTTPS to *named* hosts; Claude Code's native `allowedDomains` fits it (the
+dual-sandbox work is issue #33, still open). **Cohort B — this repo's users** —
+reach lab devices by **bare RFC1918 IP, over UDP, on dynamic ports** (EPICS
+Channel Access / pvAccess, PMAC); a hostname allowlist *cannot* express that,
+which is exactly why this tool's IP/CIDR egress jail exists.

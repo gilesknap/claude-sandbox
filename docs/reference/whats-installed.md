@@ -8,6 +8,14 @@ files read, see [configuration](configuration.md).
 Re-established by re-running `./install`, typically wired into
 `postCreate.sh`.
 
+The apt step also installs `passt` (which provides `pasta`, the userspace
+network forwarder the {ref}`egress jail <adr-network-egress-jail>` attaches to
+Claude's private netns). The jail's one container-side requirement —
+`--device=/dev/net/tun` in `devcontainer.json`'s `runArgs` — is **not**
+something the installer can add (a runArg is a container-launch setting); on a
+host missing it the jail fails closed and `claude` refuses to launch with a
+message naming the fix.
+
 | Path | Source | Purpose |
 |---|---|---|
 | `/usr/libexec/claude-sandbox/claude` | Anthropic installer (`curl -fsSL https://claude.ai/install.sh \| bash`), relocated | The real Claude binary, kept off the user's PATH so the shadow always wins |
@@ -16,7 +24,7 @@ Re-established by re-running `./install`, typically wired into
 | `/usr/libexec/claude-sandbox/sandbox-verify.sh` | `.devcontainer/claude-sandbox/sandbox-verify.sh` | `SessionStart` guard script — full integrity battery + loud warn when unwrapped. Off-PATH, root-owned, ro inside the sandbox |
 | `/usr/libexec/claude-sandbox/sandbox-gate.sh` | `.devcontainer/claude-sandbox/sandbox-gate.sh` | `UserPromptSubmit` guard script — sub-second fail-closed gate (`IS_SANDBOX=1` or block). Same protections |
 | `/etc/claude-code/managed-settings.json` | jq-merged by `install.sh` | The GLOBAL guard policy. Adds the two hooks (deduped by basename), sets `env.DISABLE_AUTOUPDATER=1` + `autoUpdates:false`. Highest-precedence + user-uneditable, so removing the hooks from `~/.claude/settings.json` does **not** disable the guard. Any real admin policy already in the file is preserved; `allowManagedHooksOnly` is deliberately **not** set (your own hooks still run) |
-| `/etc/claude-sandbox.conf` | `.devcontainer/claude-sandbox.conf` (skip-if-absent) | Host-global sandbox config read by the shadow at launch — see [configuration](configuration.md) |
+| `/etc/claude-sandbox.conf` | `.devcontainer/claude-sandbox.conf` (skip-if-absent) | Host-global sandbox config read by the shadow at launch — `workspace-root`, `no-forge`, `allow-write`, plus the egress-jail keys `egress-jail` / `allow-ip` (ADR 0015). See [configuration](configuration.md) |
 
 Disabling the auto-updater is root-cause removal: Claude Code's updater
 otherwise re-creates `~/.local/bin/claude` on a version bump, which can

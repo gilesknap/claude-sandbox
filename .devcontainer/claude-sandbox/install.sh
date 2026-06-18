@@ -59,11 +59,12 @@ apt_install() {
     fi
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -qq
-    # passt provides `pasta`, the userspace network forwarder the opt-in
-    # egress jail (ADR 0015) attaches to a per-Claude netns. Installed
-    # unconditionally though the jail is off by default: it's tiny, and a
-    # fresh host that later flips `egress-jail` on must not fail closed for
-    # want of pasta. The matching host-side dep, --device=/dev/net/tun, is a
+    # passt provides `pasta`, the userspace network forwarder the egress
+    # jail (ADR 0015) attaches to a per-Claude netns. The jail is ON by
+    # default and fail-closed, so passt is installed unconditionally: a
+    # host with the jail on (the default) must not fail to launch claude
+    # for want of pasta. It's tiny. The matching host-side dep,
+    # --device=/dev/net/tun, is a
     # devcontainer.json runArg this installer cannot add (see claude-shadow's
     # netns_launch error message and claude-sandbox.conf).
     apt-get install -y -qq --no-install-recommends \

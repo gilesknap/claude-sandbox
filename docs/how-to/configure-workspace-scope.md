@@ -31,6 +31,12 @@ allow-write = /workspaces/sibling-project
 One absolute path per line. Blank lines and `#` comments are ignored;
 non-existent paths are skipped.
 
+The same conf also carries the network-jail keys `egress-jail` and
+`allow-ip` (the on-by-default lateral-movement isolation). Those are
+covered in [Configure the network egress jail](network-egress-jail.md);
+for the full key reference see
+[Configuration](../reference/configuration.md).
+
 ## Applying the change
 
 `install.sh` copies the clone's `.devcontainer/claude-sandbox.conf` to the

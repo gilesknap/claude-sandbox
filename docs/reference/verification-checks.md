@@ -15,6 +15,14 @@ state what each check asserts; see
 [locked-down defences](locked-down-defences.md) for the
 defence → primitive mapping.
 
+The battery is jail-agnostic: it passes unchanged whether or not the
+{ref}`egress jail <adr-network-egress-jail>` is active (the jail is on
+by default). No jail-aware variant is needed — the capability check
+asserts the *effective* set, which stays empty inside the jail's nested
+userns. An additional check that the netns exists and the RFC1918
+blackhole holds is a future/optional item (see ADR 0015 consequences),
+not yet part of the 18.
+
 ## Phase 1 — the 18-check battery
 
 | # | Asserts |
@@ -41,6 +49,15 @@ defence → primitive mapping.
 On any FAIL the command exits non-zero, names the regressed defence on
 the FAIL line, and **skips phase 2 entirely**.
 
+```{note}
+Check 06 asserts the *effective* capability set, which bwrap's
+`--cap-drop ALL` empties even when the {ref}`egress jail
+<adr-network-egress-jail>` nests bwrap's userns inside the holder's. In
+a jailed session `CapBnd` reads full (`...1ffffffffff`, a nested-userns
+artifact) but `CapEff` is still 0, so the battery passes unchanged — no
+jail-aware variant of `/verify-sandbox` is needed.
+```
+
 ## Phase 2 — adversarial breakout probes
 
 Runs only when all 18 checks pass. The command reasons up **10 novel
@@ -64,6 +81,12 @@ Constraints on the probes:
   bwrap-specific cases (`--die-with-parent` race, `--new-session`
   bypass, env-redirect bypasses routing `git` back to a host
   gitconfig).
+
+With the {ref}`egress jail <adr-network-egress-jail>` on (the default),
+an attempted connection to an RFC1918 or `169.254.169.254` address is a
+candidate phase-2 probe — phase-2 probes are reasoned up dynamically, not a
+fixed list — and if run it should classify `[BLOCKED]` (blackholed route)
+rather than `[ESCAPED]`.
 
 Each probe is classified on one line:
 

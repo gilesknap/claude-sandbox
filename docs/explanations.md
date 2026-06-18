@@ -1,6 +1,7 @@
 # Explanations
 
-The why behind the design: threat model and sandbox rationale.
+The why behind the design: threat model, sandbox rationale, and the network
+egress jail.
 
 ```{toctree}
 :maxdepth: 1

@@ -106,8 +106,10 @@ unblocked.
 
 Two structural choices fix scope:
 
-- **Bash, inlined in the shadow.** The setup is implemented as a `netns_setup()`
-  function *inside* `claude-shadow`, not a sourced module — preserving the
+- **Bash, inlined in the shadow.** The setup is implemented as inlined functions
+  (`netns_launch()` orchestrating, `netns_holder()` running inside `unshare -rn`,
+  plus an `egress_jail_enabled` predicate) *inside* `claude-shadow`, not a sourced
+  module — preserving the
   single-file, read-top-to-bottom auditability that {ref}`adr-bash-only` and
   {ref}`adr-integrity-surfaces` rest on. netns + routing + pasta *is* shell
   orchestration of CLI tools; the literal `ip route add blackhole …` commands are
@@ -159,18 +161,28 @@ Two structural choices fix scope:
   jail must add the one runArg — the error says so — and otherwise opts out with
   `=0`. The deliberate trade: a loud stop over a silent downgrade of the default
   control.
-- **Verification follows the same three-surface model** as
-  {ref}`adr-integrity-surfaces`: when the jail is enabled, `/verify-sandbox` gains
-  a check that the netns exists and the RFC1918 blackhole holds with only the
-  configured `allow-ip` routes punched through.
+- **Verification will follow the same three-surface model** as
+  {ref}`adr-integrity-surfaces`: a FUTURE, optional jail-aware check (not yet
+  implemented) would assert, when the jail is enabled, that the netns exists and
+  the RFC1918 blackhole holds with only the configured `allow-ip` routes punched
+  through. This is a future item — the existing 18-check battery already passes
+  unchanged in a jailed session (check 06 asserts `CapEff=0`; see the bullet
+  above), so no jail-aware variant is required today.
 - **Proven before adoption:** the full Design-D chain — holder netns → pasta
   attach → route lockdown → nested capful bwrap → Claude — works on a real
   rootless host, *and* the route-immutability security battery passes
   (`probe-network-jail.sh`, run unjailed).
-- **Still pending at adoption:** implementation in `claude-shadow` + `install.sh`
-  + tests, the jail-aware `/verify-sandbox` check, and live verification of the
-  Cohort B device path (`probe-network-jail.sh <device-ip>:<port>` against a real
-  lab device — core internet/RFC1918 behaviour is already proven).
+- **Done since adoption:** implemented in `claude-shadow`
+  (`netns_launch`/`netns_holder`/`egress_jail_enabled`) plus `install.sh` (installs
+  `passt`, which provides pasta) and tests; on by default, fail-closed, and
+  validated end-to-end on a rootless `--network=host` host **and in a bridge/NAT
+  container** — the gateway-collision and nested-pasta paths are proven (the
+  gateway is pinned on-link before the RFC1918 blackhole, so egress works while
+  RFC1918 and the same subnet stay blocked). The shadow/`install.sh`/tests
+  implementation landed on adoption (2026-06-18).
+- **Still optional/open:** only the jail-aware `/verify-sandbox` check (a future
+  item, not yet implemented — see the verification bullet above). Core
+  internet/RFC1918 behaviour is already proven.
 
 Live design and the feasibility probes: issue **#56** (refines #31, which is
 closed; #33 remains open for Cohort A).

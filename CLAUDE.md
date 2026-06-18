@@ -20,3 +20,6 @@ that boundary.
   don't merge on a green build alone.
 - Threat model + sandbox model: `README-CLAUDE.md`
 - Sandbox-integrity spec: `.claude/commands/verify-sandbox.md`
+- Network egress jail (lateral-movement isolation, ADR 0015):
+  `docs/explanations/decisions/0015-network-egress-jail.md`; operational skill:
+  `.claude/skills/claude-sandbox-networking/SKILL.md`
