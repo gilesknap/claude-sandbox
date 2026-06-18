@@ -153,8 +153,8 @@ install_file_if_absent() {
 }
 
 ensure_cred_dirs() {
-    mkdir -p "$HOME/.config/gh" "$HOME/.config/glab-cli"
-    touch "$HOME/.claude.json"
+    mkdir -p "$USER_HOME/.config/gh" "$USER_HOME/.config/glab-cli"
+    touch "$USER_HOME/.claude.json"
 }
 
 # install_conf: place the clone's claude-sandbox.conf at the host-global
