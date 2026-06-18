@@ -346,8 +346,10 @@ EOF
     local input merged tmp
     if [ -f "$settings" ]; then input="$(cat "$settings")"; else input='{}'; fi
 
-    merged="$(printf '%s' "$input" | jq \
-        --arg verify "$VERIFY_CMD" --arg gate "$GATE_CMD" '
+    # jq program: idempotent merge of the integrity guard + updater-disable into
+    # the managed-settings policy. Dedup by command basename; foreign keys (a
+    # real admin's org policy) are preserved. $verify/$gate are jq --arg vars.
+    local merge_program='
         .hooks //= {}
         | .hooks.SessionStart //= []
         | .hooks.UserPromptSubmit //= []
@@ -358,7 +360,8 @@ EOF
              then . else .hooks.SessionStart += [{hooks:[{type:"command",command:$verify}]}] end)
         | (if (.hooks.UserPromptSubmit | any(.[].hooks[]?; (.command // "") | endswith("sandbox-gate.sh")))
              then . else .hooks.UserPromptSubmit += [{hooks:[{type:"command",command:$gate}]}] end)
-    ')"
+    '
+    merged="$(printf '%s' "$input" | jq --arg verify "$VERIFY_CMD" --arg gate "$GATE_CMD" "$merge_program")"
 
     tmp="$(mktemp "$settings.XXXXXX")"
     printf '%s\n' "$merged" > "$tmp"
@@ -398,12 +401,15 @@ wire_user_statusline() {
     if [ "$had_file" = true ]; then input="$(cat "$settings")"; else input='{}'; fi
     if [ -f "$USER_HOME/.claude/statusline-command.sh" ]; then sl_present=true; fi
 
-    merged="$(printf '%s' "$input" | jq \
-        --arg sl "$USER_SL_CMD" --argjson slp "$sl_present" '
+    # jq program: prune any legacy user-scope guard hooks (the guard now lives
+    # only in managed settings, so it never double-fires) and set the statusline
+    # preference if absent. Foreign hooks survive. $sl/$slp are jq vars.
+    local prune_program='
         (if .hooks.SessionStart    then .hooks.SessionStart    |= map(select((any(.hooks[]?; (.command // "") | endswith("sandbox-verify.sh"))) | not)) else . end)
         | (if .hooks.UserPromptSubmit then .hooks.UserPromptSubmit |= map(select((any(.hooks[]?; (.command // "") | endswith("sandbox-gate.sh"))) | not)) else . end)
         | (if ($slp and .statusLine == null) then .statusLine = {type:"command",command:$sl} else . end)
-    ')"
+    '
+    merged="$(printf '%s' "$input" | jq --arg sl "$USER_SL_CMD" --argjson slp "$sl_present" "$prune_program")"
 
     # Don't create an empty {} settings on a fresh home that has no
     # statusline source to wire (e.g. a promoted target).
