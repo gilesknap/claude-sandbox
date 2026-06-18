@@ -2,9 +2,10 @@
 name: claude-sandbox-networking
 description: >-
   Network egress, firewall, and lateral-movement design for this repo's bwrap
-  Claude sandbox. Egress is OPEN by design (ADR 0005); the chosen direction is a
-  per-process netns + pasta routing allowlist (ADR 0015, issue #56, refining
-  #31). Surface
+  Claude sandbox. The per-process egress jail (netns + pasta routing allowlist,
+  ADR 0015, issue #56) is ON by default as of 2026-06-18, fail-closed, with a
+  CLAUDE_SANDBOX_EGRESS_JAIL=0 escape hatch — overriding ADR 0005's earlier
+  open-egress default. Surface
   BEFORE proposing or discussing ANY network change: egress filtering, firewall
   / nftables / iptables / DOCKER-USER, `--unshare-net`, netns / veth, pasta /
   slirp4netns, a CONNECT or SNI proxy, `HTTPS_PROXY` injection, VLAN /
@@ -18,15 +19,24 @@ Read before designing or sketching any network-egress change. The live design
 is **issue #56**; this skill is the durable context + the guards that stop
 agents re-deriving already-rejected options (it has happened).
 
-## Standing decision — egress is OPEN (ADR 0005)
+## Standing decision — the egress jail is ON by default (ADR 0015)
 
-`docs/explanations/decisions/0005-network-egress-open.md` (**Accepted**): the
-bwrap argv deliberately omits `--unshare-net`, shares the host netns, runs no
-per-process egress firewall. Filtering is out of scope *for the core tool* — it
-"belongs at the devcontainer boundary." Adding egress control is a **new layered
-ADR**, not a reversal of 0005 — written as ADR 0015
-(`docs/explanations/decisions/0015-network-egress-jail.md`, **Accepted**,
-2026-06-17). Don't flip 0005; 0015 layers on it.
+As of **2026-06-18** the per-process egress jail is the **default** posture
+(`docs/explanations/decisions/0015-network-egress-jail.md`, **Accepted**). It is
+**fail-closed**: if `/dev/net/tun` / pasta / unshare are missing, `claude`
+refuses to launch (it does NOT silently fall back to open egress). The escape
+hatch is `CLAUDE_SANDBOX_EGRESS_JAIL=0` (env, per session) or `egress-jail = 0`
+in `/etc/claude-sandbox.conf` (per host); env wins over conf. Mechanically it's
+still a layer *beneath* bwrap (a holder netns), not an in-core firewall — that
+part of ADR 0005's reasoning stands.
+
+This **overrides ADR 0005's open-egress *default*** (`0005-network-egress-open.md`,
+now "Superseded in part"). 0005's analysis still applies to the `=0` path: with
+the jail off the bwrap argv omits `--unshare-net` and shares the host netns, no
+per-process firewall — the original open-egress behaviour. So: the default is
+jailed; `=0` restores 0005's world. Don't describe egress as "open by default"
+anymore, and don't re-add an "opt-in / off by default" framing — that was the
+pre-2026-06-18 state.
 
 ## Runtime target — rootless Podman (NOT Docker-bridge)
 
@@ -103,10 +113,13 @@ on. Revisit extraction (its own ADR) only if the net code outgrows the shadow.
 binary both green on a real rootless host: `CLAUDE_SANDBOX_EGRESS_JAIL=1 claude
 -p` reaches the API through the jail; route-immutability battery passes; Cohort B
 `allow-ip` device path confirmed reachable; same-subnet host blackholed. Lives in
-`claude-shadow` (`parse_config` `egress-jail`/`allow-ip` keys + inlined
-`netns_holder`/`netns_launch`), opt-in via `/etc/claude-sandbox.conf`. Requires
-`/dev/net/tun` (`devcontainer.json` runArgs `--device=/dev/net/tun`) — the one
-hard container-side dep; fail-closed if pasta/unshare/tun missing. Interactive
+`claude-shadow` (`parse_config` `egress-jail`/`allow-ip` keys, `egress_jail_enabled`
+predicate + inlined `netns_holder`/`netns_launch`), **ON by default** — disable
+with `CLAUDE_SANDBOX_EGRESS_JAIL=0` (env) or `egress-jail = 0` in
+`/etc/claude-sandbox.conf`. Requires `/dev/net/tun` (`devcontainer.json` runArgs
+`--device=/dev/net/tun`) — the one hard container-side dep; **fail-closed** if
+pasta/unshare/tun missing (`claude` won't launch — the error names the `=0`
+escape hatch), never a silent unjailed fallback. Interactive
 `claude` + `/verify-sandbox` both confirmed live in a jailed session (18/18 pass
 — check 06 asserts `CapEff=0`, which holds). Phase-2 landed on **PR #58** (refs
 #56): `install.sh` installs `passt`; CapEff/CapBnd doc corrections; cap-ceiling
@@ -170,7 +183,11 @@ with no `via <gw>`), to be handled then. Only `--network=host` tested so far.
   silent flip of the host-net default. (Keeping host-net is an EPICS-workflow
   choice, NOT a mechanism requirement — see portability note: Design D works in
   non-host containers too.)
-- **Flipping ADR 0005** instead of adding a new layered ADR.
+- **Rewriting ADR 0005** to say the opposite. Its open-egress *default* is now
+  overridden (jail-on-by-default), but that was recorded the right way — a
+  "Superseded in part" status note on 0005 + the layered ADR 0015 — leaving 0005's
+  analysis intact for the `=0` path. Record future posture changes the same way;
+  don't gut 0005.
 - Mounting **`docker.sock`** into the Claude container.
 
 ## Pointers

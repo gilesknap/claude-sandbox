@@ -294,10 +294,13 @@ parse_config() {
                 export CLAUDE_SANDBOX_NO_FORGE
                 ;;
             egress-jail)
-                # Opt-in gate for the per-process network egress jail (ADR 0015,
-                # Design D). Off unless this is set, so dogfood ≈ guest is
-                # unchanged for hosts that don't enable it.
-                : "${CLAUDE_SANDBOX_EGRESS_JAIL:=1}"
+                # Per-process network egress jail (ADR 0015, Design D). ON by
+                # default — see egress_jail_enabled(); this conf key only needs
+                # to appear to TURN IT OFF on a host: `egress-jail = 0`. A bare
+                # `egress-jail` (no value) just reaffirms on. := no-ops when the
+                # var is already set, so an env CLAUDE_SANDBOX_EGRESS_JAIL=0 wins
+                # over the conf.
+                : "${CLAUDE_SANDBOX_EGRESS_JAIL:=${value:-1}}"
                 export CLAUDE_SANDBOX_EGRESS_JAIL
                 ;;
             allow-write)
@@ -400,17 +403,28 @@ netns_holder() {
     exec "$@"
 }
 
+# egress_jail_enabled: ADR 0015 — the jail is ON by default. Only an explicit
+# CLAUDE_SANDBOX_EGRESS_JAIL=0 (env var, or `egress-jail = 0` in the /etc conf)
+# turns it off; any other value (unset, 1, …) means on. Kept a one-line
+# predicate so the launch gate reads clearly and the default is unit-testable.
+egress_jail_enabled() {
+    [ "${CLAUDE_SANDBOX_EGRESS_JAIL:-1}" != "0" ]
+}
+
 # netns_launch: Design D orchestration (ADR 0015). Runs the launch ("$@") inside
 # a user+net namespace bridged to the internet by pasta, with the routing
 # allowlist above. The holder must create the netns (not bwrap, not pasta): the
 # container has no CAP_NET_ADMIN to make a netns without a userns, and a pasta-
-# created namespace set leaves bwrap a /proc it can't use. Fail-closed: if the
-# jail is requested but its prerequisites are missing, Claude does not launch.
+# created namespace set leaves bwrap a /proc it can't use. Fail-closed: the jail
+# is on by default, so if its prerequisites are missing Claude does NOT launch
+# (a silent unjailed fallback would quietly drop the default security control).
+# Each error names the fix AND the CLAUDE_SANDBOX_EGRESS_JAIL=0 escape hatch.
 netns_launch() {
-    command -v unshare >/dev/null 2>&1 || { echo "claude-sandbox: egress jail needs unshare (util-linux)" >&2; exit 1; }
-    command -v pasta   >/dev/null 2>&1 || { echo "claude-sandbox: egress jail needs pasta (apt-get install passt)" >&2; exit 1; }
+    local esc="set CLAUDE_SANDBOX_EGRESS_JAIL=0 to launch without the jail"
+    command -v unshare >/dev/null 2>&1 || { echo "claude-sandbox: egress jail needs unshare (util-linux) — or $esc" >&2; exit 1; }
+    command -v pasta   >/dev/null 2>&1 || { echo "claude-sandbox: egress jail needs pasta (apt-get install passt) — or $esc" >&2; exit 1; }
     if [ ! -e /dev/net/tun ]; then
-        echo "claude-sandbox: egress jail needs /dev/net/tun — add --device=/dev/net/tun to the container" >&2
+        echo "claude-sandbox: egress jail needs /dev/net/tun — add --device=/dev/net/tun to the container, or $esc" >&2
         exit 1
     fi
 
@@ -523,10 +537,11 @@ mapfile -t ARGV < <(bwrap_argv_build "$WORKSPACE_ROOT" "$REAL_CLAUDE" "$@")
 # is defanged (an ioctl inside the sandbox lands in script's pty, which
 # script reads and writes back as bytes — not keystrokes — to the host
 # terminal).
-if [ "${CLAUDE_SANDBOX_EGRESS_JAIL:-}" = "1" ]; then
-    # ADR 0015 (opt-in): run the sandbox inside a pasta-bridged netns with a
-    # routing allowlist. netns_launch cannot `exec` — it must stay foreground to
-    # drive the holder/pasta handshake — so it exits with the sandbox's status.
+if egress_jail_enabled; then
+    # ADR 0015 (on by default): run the sandbox inside a pasta-bridged netns
+    # with a routing allowlist. netns_launch cannot `exec` — it must stay
+    # foreground to drive the holder/pasta handshake — so it exits with the
+    # sandbox's status. Disable per host with CLAUDE_SANDBOX_EGRESS_JAIL=0.
     netns_launch script -q -E never -c "$(printf '%q ' "${ARGV[@]}")" /dev/null
 else
     exec script -q -E never -c "$(printf '%q ' "${ARGV[@]}")" /dev/null

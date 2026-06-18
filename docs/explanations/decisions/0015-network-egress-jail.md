@@ -8,7 +8,11 @@ Date: 2026-06-17
 
 Accepted
 
-Layers on top of {ref}`adr-network-egress-open` (ADR 5); does **not** reverse it.
+Layers on top of {ref}`adr-network-egress-open` (ADR 5) — same
+mechanism-beneath-bwrap relationship — but **as of 2026-06-18 the jail is the
+default**. That overrides ADR 5's *open-egress default* (not its reasoning:
+`CLAUDE_SANDBOX_EGRESS_JAIL=0` restores the open path, and filtering still lives
+around the tool, not inside it). ADR 5 carries a pointer here.
 
 ## Context
 
@@ -90,6 +94,16 @@ Channel Access broadcast are untouched. Only the shadow's launch is jailed:
   the jail, deleting a blackhole route, punching a route past it, and creating a
   net device all fail `EPERM`, and RFC1918 stays blocked after the attempts.
 
+**On by default, fail-closed, with an escape hatch.** The jail runs unless
+`CLAUDE_SANDBOX_EGRESS_JAIL=0` (env, per session) or `egress-jail = 0`
+(`/etc/claude-sandbox.conf`, per host) disables it. If the jail is on but a
+prerequisite is missing (`/dev/net/tun`, pasta, unshare), the launch **fails
+closed** — `claude` refuses to start rather than silently dropping back to open
+egress — and the error names both the fix and the `=0` escape hatch. This is the
+secure-by-default choice for the lab threat (a misconfigured host can't quietly
+lose the control); the escape hatch keeps a non-EPICS or deliberately-open host
+unblocked.
+
 Two structural choices fix scope:
 
 - **Bash, inlined in the shadow.** The setup is implemented as a `netns_setup()`
@@ -136,8 +150,15 @@ Two structural choices fix scope:
 - **Hostname allowlists stay out of scope for Cohort B.** Native `allowedDomains`
   cannot express bare-IP/UDP/dynamic-port device traffic; Cohort A / dual-sandbox
   remains issue #33.
-- **Gated, so dogfood ≈ guest is preserved.** The jail is opt-in via config; with
-  it off, the launch path and guest installs are unchanged.
+- **On by default shifts the dogfood ≈ guest cost.** With the jail the default
+  and fail-closed, a host that hasn't mounted `/dev/net/tun` (a `devcontainer.json`
+  runArg an installer can't add) gets a `claude` that refuses to launch until it
+  either adds the device or sets `CLAUDE_SANDBOX_EGRESS_JAIL=0`. `install.sh`
+  installs pasta so that prerequisite is never the blocker; the dogfood box mounts
+  the tun device. A plain `git clone + ./install` guest that wants the default
+  jail must add the one runArg — the error says so — and otherwise opts out with
+  `=0`. The deliberate trade: a loud stop over a silent downgrade of the default
+  control.
 - **Verification follows the same three-surface model** as
   {ref}`adr-integrity-surfaces`: when the jail is enabled, `/verify-sandbox` gains
   a check that the netns exists and the RFC1918 blackhole holds with only the

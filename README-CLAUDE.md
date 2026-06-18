@@ -33,11 +33,16 @@ non-zero on any FAIL, so it's usable as a CI assertion).
 | Curated gitconfig in effect | `GIT_CONFIG_GLOBAL=/etc/claude-gitconfig`, `GIT_CONFIG_SYSTEM=/dev/null` | check 16 |
 | Chrome browser-extension RPC channel disabled | shadow injects `--no-chrome` and strips user `--chrome` so Claude Code never writes its `NativeMessagingHosts` manifest | check 03 (regression manifests as browser dirs under `~/.config`) |
 
-Network egress (`--share-net`, NOT unshared) is deliberately open so
-Claude can reach `api.anthropic.com`. No PASS/FAIL check — any
-regression makes Claude fail on first use rather than silently.
-Implicit: `--die-with-parent` (the sandbox disappears the moment
-Claude does).
+Network egress is **jailed by default** (ADR 0015): only Claude runs in a
+per-process netns whose routing allowlist blackholes RFC1918 (internal LANs,
+lab devices) while the internet, DNS, and configured `allow-ip` devices stay
+reachable — defeating lateral movement, not exfil. It is **fail-closed**
+(missing `/dev/net/tun`/pasta ⇒ `claude` won't launch) with a
+`CLAUDE_SANDBOX_EGRESS_JAIL=0` escape hatch that restores the older open-egress
+behaviour (host netns shared, no per-process firewall — ADR 0005). The jail is a
+layer *beneath* bwrap; `/verify-sandbox` still passes unchanged in it (it asserts
+`CapEff=0`, not netns state). Implicit: `--die-with-parent` (the sandbox
+disappears the moment Claude does).
 
 **Refusal-on-failure**: if the host can't run unprivileged user
 namespaces, the installer refuses with a specific actionable
@@ -64,7 +69,7 @@ sudo, …) and the primitive that closes it.
 |---|---|---|
 | **Workspace contents** | Claude has to read your workspace to do its job | Keep secrets outside the workspace (e.g. `~/.config/` mounted via your devcontainer's `mounts`). Don't put `.env` files with production credentials at the workspace root and expect them to be invisible |
 | **Container host kernel** | A bwrap-aware kernel exploit is out of scope; this is a credential-isolation tool, not a sandbox against arbitrary native code | Keep your kernel patched; treat the devcontainer host as the trust boundary |
-| **Network egress filtering** | Claude needs network. The sandbox shares the netns and does not run a per-process firewall | Run the devcontainer itself behind an egress filter if you need one |
+| **Internet exfiltration** | The default egress jail (ADR 0015) blocks **lateral movement** to internal hosts (RFC1918), not exfil — the internet, DNS, and `allow-ip` devices stay reachable so Claude can work. A determined session can still POST data to a permitted destination | If outbound exfil is in your threat model, run the devcontainer behind your own egress filter; the jail is not a DLP boundary |
 | **Non-standard credential paths** | The installer scans `mount` and warns about `/kubeconfig`-style binds at install time, but cannot enumerate every custom mount | Audit your devcontainer's `mounts` block |
 | **Non-root devcontainers; rootful Docker w/ default AppArmor** | v1 targets rootless podman + Debian/Ubuntu + `remoteUser=root` | Tracked for v2 |
 

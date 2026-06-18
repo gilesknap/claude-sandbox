@@ -360,22 +360,47 @@ assert_parse scenario11-allow-write-multi bash -c "
     printf '%s\n' \"\$CLAUDE_SANDBOX_ALLOW_WRITE\" | grep -qxF '/path/two'
 "
 
-# egress-jail boolean gate (ADR 0015)
-printf 'egress-jail\n' > "$TMPCONF"
-assert_parse scenario11-egress-jail bash -c "
+# egress-jail ON by default (ADR 0015): absent from conf + unset env => enabled
+printf 'no-forge\n' > "$TMPCONF"
+assert_parse scenario11-egress-jail-default-on bash -c "
     source \"$SHADOW\"
     unset CLAUDE_SANDBOX_EGRESS_JAIL
     parse_config \"$TMPCONF\"
-    [ \"\${CLAUDE_SANDBOX_EGRESS_JAIL:-}\" = '1' ]
+    egress_jail_enabled
 "
 
-# egress-jail absent leaves the gate unset (opt-in default off)
-printf 'no-forge\n' > "$TMPCONF"
-assert_parse scenario11-egress-jail-default-off bash -c "
+# a bare `egress-jail` key reaffirms on
+printf 'egress-jail\n' > "$TMPCONF"
+assert_parse scenario11-egress-jail-bare bash -c "
     source \"$SHADOW\"
     unset CLAUDE_SANDBOX_EGRESS_JAIL
     parse_config \"$TMPCONF\"
-    [ -z \"\${CLAUDE_SANDBOX_EGRESS_JAIL:-}\" ]
+    [ \"\${CLAUDE_SANDBOX_EGRESS_JAIL:-}\" = '1' ] && egress_jail_enabled
+"
+
+# `egress-jail = 0` in conf disables the jail
+printf 'egress-jail = 0\n' > "$TMPCONF"
+assert_parse scenario11-egress-jail-conf-off bash -c "
+    source \"$SHADOW\"
+    unset CLAUDE_SANDBOX_EGRESS_JAIL
+    parse_config \"$TMPCONF\"
+    [ \"\${CLAUDE_SANDBOX_EGRESS_JAIL:-}\" = '0' ] && ! egress_jail_enabled
+"
+
+# env CLAUDE_SANDBOX_EGRESS_JAIL=0 wins over a bare conf `egress-jail`
+printf 'egress-jail\n' > "$TMPCONF"
+assert_parse scenario11-egress-jail-env-off-wins bash -c "
+    source \"$SHADOW\"
+    export CLAUDE_SANDBOX_EGRESS_JAIL=0
+    parse_config \"$TMPCONF\"
+    [ \"\$CLAUDE_SANDBOX_EGRESS_JAIL\" = '0' ] && ! egress_jail_enabled
+"
+
+# the predicate's default-on holds with no conf parsed at all
+assert_parse scenario11-egress-jail-predicate-default bash -c "
+    source \"$SHADOW\"
+    unset CLAUDE_SANDBOX_EGRESS_JAIL
+    egress_jail_enabled
 "
 
 # allow-ip single
