@@ -377,12 +377,20 @@ gateway-routable half matters — it distinguishes a *surgical* lateral
 blackhole from a network that is simply down, so a regression that breaks
 all egress can't masquerade as "jail working".
 
-The probe addresses (`10.255.255.254`, `172.31.255.254`,
+The broad probe addresses (`10.255.255.254`, `172.31.255.254`,
 `192.168.255.254`) sit deep in each RFC1918 block where a real gateway,
 resolver, or `allow-ip` device is implausible; the jail punches only
 specific `/32`s back through the blackhole, so these resolve to
-`unreachable`. As with check 19, when the jail is disabled (no blackhole
-routes) the check PASSES with a note.
+`unreachable`. These exercise the generic RFC1918 blackholes — but the
+jail *also* blackholes the **connected subnet** (the host's own LAN), and
+that is the higher-value lateral-movement case: a neighbour one hop away
+on the same wire. So the check additionally derives that subnet and probes
+it. The connected-subnet blackhole is the one `blackhole` line that is
+*not* a generic RFC1918 range, and the probe uses its **network base
+address** (the part before `/`) — guaranteed in-subnet, and never one of
+the host `/32`s the jail punches back (gateway / resolver / `allow-ip`),
+so it can't accidentally hit an allowed route. As with check 19, when the
+jail is disabled (no blackhole routes) the check PASSES with a note.
 
 ```bash
 # `ip route get <ip>` returns non-zero ("Network is unreachable") for a
@@ -390,7 +398,13 @@ routes) the check PASSES with a note.
 # instantaneous FIB query with no connection attempt or timing ambiguity.
 if ip route show 2>/dev/null | grep -qE '^blackhole (10\.0\.0\.0/8|172\.16\.0\.0/12|192\.168\.0\.0/16)'; then
     blocked=1
-    for ip in 10.255.255.254 172.31.255.254 192.168.255.254; do
+    probes=(10.255.255.254 172.31.255.254 192.168.255.254)
+    # Connected subnet (host LAN): the non-RFC1918-generic blackhole line.
+    # Probe its network base — in-subnet by construction, never a punched /32.
+    subnet="$(ip route show 2>/dev/null | awk '/^blackhole /{print $2}' \
+        | grep -vxE '10\.0\.0\.0/8|172\.16\.0\.0/12|192\.168\.0\.0/16|169\.254\.0\.0/16' | head -n1)"
+    [ -n "$subnet" ] && probes+=("${subnet%/*}")
+    for ip in "${probes[@]}"; do
         # Reachable (route resolved) → lateral egress leaked for this range.
         ip route get "$ip" >/dev/null 2>&1 && blocked=0
     done
