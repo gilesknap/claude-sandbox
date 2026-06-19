@@ -44,18 +44,32 @@ JAIL_DNS_FWD="192.0.2.53"
 # would exec the real binary inside an already-sandboxed session).
 : "${CLAUDE_SHADOW_SOURCE_ONLY:=0}"
 
+# filter_chrome_args OUTVAR ARGS...: set array OUTVAR to ARGS with any
+# `--chrome` removed. Stripping it stops a user-supplied flag from overriding
+# our --no-chrome injection (the browser-extension native-messaging RPC channel
+# is outside the threat model). TWO call sites strip it — the recursion guard
+# below (which execs the real binary) and bwrap_argv_build (the wrapped launch);
+# a single helper keeps those two code paths from ever diverging. Uses a nameref
+# (not stdout) so bwrap_argv_build stays subprocess-free, and preserves args
+# that contain newlines.
+filter_chrome_args() {
+    local -n _out="$1"; shift
+    _out=()
+    local _a
+    for _a in "$@"; do
+        case "$_a" in --chrome) ;; *) _out+=( "$_a" ) ;; esac
+    done
+}
+
 # Recursion guard: if IS_SANDBOX=1 is already set we are inside the
 # sandbox (e.g. a hook or skill spawned `claude`), so fall through to
 # the real binary directly. Inside the sandbox the real binary is
 # bind-mounted at ~/.local/bin/claude — exec that path so argv[0]
 # matches the conventional install location. --no-chrome injection
-# (see filter_chrome_args below) applies here too so a nested spawn
+# (via filter_chrome_args) applies here too so a nested spawn
 # can't re-enable the browser-extension RPC channel.
 if [ "$CLAUDE_SHADOW_SOURCE_ONLY" != "1" ] && [ "${IS_SANDBOX:-}" = "1" ]; then
-    _filtered=()
-    for _a in "$@"; do
-        case "$_a" in --chrome) ;; *) _filtered+=( "$_a" ) ;; esac
-    done
+    filter_chrome_args _filtered "$@"
     exec "${HOME:-/root}/.local/bin/claude" --no-chrome "${_filtered[@]+"${_filtered[@]}"}"
 fi
 
@@ -244,20 +258,14 @@ bwrap_argv_build() {
 
     # Disable the Chrome browser-extension RPC channel: strip any
     # user-supplied --chrome so it can't override our --no-chrome
-    # injection. The browser extension's native-messaging-host bridge
-    # would let any installed Chrome extension on the host invoke
-    # tools inside this in-sandbox Claude — outside the threat model.
-    # Manifests Claude would otherwise write into ~/.config/<browser>/
-    # NativeMessagingHosts/ are gated on this flag, so check 03
-    # (strict-under-/root) catches any regression.
+    # injection (see filter_chrome_args). The browser extension's
+    # native-messaging-host bridge would let any installed Chrome
+    # extension on the host invoke tools inside this in-sandbox Claude —
+    # outside the threat model. Manifests Claude would otherwise write
+    # into ~/.config/<browser>/NativeMessagingHosts/ are gated on this
+    # flag, so check 03 (strict-under-/root) catches any regression.
     local -a user_args=()
-    local user_arg
-    for user_arg in "$@"; do
-        case "$user_arg" in
-            --chrome) ;;
-            *) user_args+=( "$user_arg" ) ;;
-        esac
-    done
+    filter_chrome_args user_args "$@"
 
     # Exec via the in-sandbox conventional path so Claude's argv[0]
     # matches what the official installer would have placed.
@@ -347,6 +355,36 @@ parse_config() {
     done < "$conf"
 }
 
+# jail_fail MSG [PID]: print a uniform fail-closed egress-jail error to stderr
+# and exit 1, optionally killing the holder PID first. Every fail-closed point
+# in netns_holder/netns_launch routes through here so the jail's refuse-to-
+# launch behaviour reads identically everywhere. MSG already carries its own
+# leading "— " or "needs " so both wordings render naturally after "egress jail".
+jail_fail() {
+    echo "claude-sandbox: egress jail $1" >&2
+    if [ -n "${2:-}" ]; then kill "$2" 2>/dev/null || true; fi
+    exit 1
+}
+
+# wait_for CMD...: poll CMD (run as a command, e.g. `wait_for test -f X`) up to
+# ~10s (200 × 50ms). Returns 0 the instant it succeeds, 1 if it never does.
+# Used for the netns/pasta handshake where one process waits on state another
+# is about to create.
+wait_for() {
+    local _i
+    for _i in $(seq 1 200); do
+        if "$@"; then return 0; fi
+        sleep 0.05
+    done
+    return 1
+}
+
+# route_field KEY <route-line: echo the token following KEY in an `ip route`
+# line (KEY=via → gateway, KEY=dev → NIC). Empty when KEY is absent.
+route_field() {
+    awk -v k="$1" '{for(i=1;i<NF;i++)if($i==k)print $(i+1)}'
+}
+
 # netns_holder: runs inside `unshare -rn` (a user+net namespace it owns).
 # Brings up loopback, waits for claude-shadow to attach pasta and signal
 # readiness, locks the routing allowlist, then execs the real launch ("$@").
@@ -360,19 +398,10 @@ parse_config() {
 # fails aborts the holder (set -e) so Claude never starts un-allowlisted.
 netns_holder() {
     ip link set lo up
-    local i
-    for i in $(seq 1 200); do
-        if [ -f "$CLAUDE_JAIL_READY" ]; then break; fi
-        sleep 0.05
-    done
-    if [ ! -f "$CLAUDE_JAIL_READY" ]; then
-        echo "claude-sandbox: egress jail — pasta never signalled ready" >&2
-        exit 1
-    fi
-    if ! ip route show default | grep -q .; then
-        echo "claude-sandbox: egress jail — no default route after pasta attach" >&2
-        exit 1
-    fi
+    wait_for test -f "$CLAUDE_JAIL_READY" \
+        || jail_fail "— pasta never signalled ready"
+    ip route show default | grep -q . \
+        || jail_fail "— no default route after pasta attach"
     # pasta --config-net mirrors the host L3 config into the netns (address,
     # connected subnet, default gateway). Capture it, then apply the SURGICAL
     # allowlist: blackhole RFC1918 AND the connected subnet, punch back only the
@@ -383,11 +412,10 @@ netns_holder() {
     # See ADR 0015 (validated by probe-network-jail.sh).
     local def gw nic subnet
     def="$(ip route show default 2>/dev/null | head -n1)"
-    gw="$(awk '{for(i=1;i<NF;i++)if($i=="via")print $(i+1)}' <<< "$def")"
-    nic="$(awk '{for(i=1;i<NF;i++)if($i=="dev")print $(i+1)}' <<< "$def")"
+    gw="$(route_field via <<< "$def")"
+    nic="$(route_field dev <<< "$def")"
     if [ -z "$gw" ] || [ -z "$nic" ]; then
-        echo "claude-sandbox: egress jail — no default route via/dev after pasta attach" >&2
-        exit 1
+        jail_fail "— no default route via/dev after pasta attach"
     fi
     subnet="$(ip -o route show dev "$nic" scope link 2>/dev/null | awk 'NR==1{print $1}' || true)"
     local -a dns=()
@@ -487,18 +515,19 @@ jail_stage_dns() {
 # Each error names the fix AND the CLAUDE_SANDBOX_EGRESS_JAIL=0 escape hatch.
 netns_launch() {
     local esc="set CLAUDE_SANDBOX_EGRESS_JAIL=0 to launch without the jail"
-    command -v unshare >/dev/null 2>&1 || { echo "claude-sandbox: egress jail needs unshare (util-linux) — or $esc" >&2; exit 1; }
-    command -v pasta   >/dev/null 2>&1 || { echo "claude-sandbox: egress jail needs pasta (apt-get install passt) — or $esc" >&2; exit 1; }
-    if [ ! -e /dev/net/tun ]; then
-        echo "claude-sandbox: egress jail needs /dev/net/tun — add --device=/dev/net/tun to the container, or $esc" >&2
-        exit 1
-    fi
+    command -v unshare >/dev/null 2>&1 || jail_fail "needs unshare (util-linux) — or $esc"
+    command -v pasta   >/dev/null 2>&1 || jail_fail "needs pasta (apt-get install passt) — or $esc"
+    [ -e /dev/net/tun ] \
+        || jail_fail "needs /dev/net/tun — add --device=/dev/net/tun to the container, or $esc"
 
     CLAUDE_JAIL_READY="$(mktemp -u "${TMPDIR:-/tmp}/claude-jail-ready.XXXXXX")"
     export CLAUDE_JAIL_READY
     rm -f "$CLAUDE_JAIL_READY"
 
-    export -f netns_holder
+    # The holder runs in a fresh `bash -c`, so every function it calls must be
+    # exported too — not just netns_holder, but the helpers it reaches:
+    # jail_fail, wait_for, route_field.
+    export -f netns_holder jail_fail wait_for route_field
     export JAIL_DNS_FWD
     # Explicit <&0 keeps the holder's stdin on the terminal: bash redirects a
     # background job's stdin to /dev/null otherwise, which would break Claude's
@@ -508,16 +537,8 @@ netns_launch() {
     unshare -rn bash -c 'netns_holder "$@"' _ "$@" <&0 &
     local holder=$!
 
-    local i
-    for i in $(seq 1 200); do
-        if [ -e "/proc/$holder/ns/net" ]; then break; fi
-        sleep 0.05
-    done
-    if [ ! -e "/proc/$holder/ns/net" ]; then
-        echo "claude-sandbox: egress jail — holder netns never appeared" >&2
-        kill "$holder" 2>/dev/null || true
-        exit 1
-    fi
+    wait_for test -e "/proc/$holder/ns/net" \
+        || jail_fail "— holder netns never appeared" "$holder"
 
     # pasta attaches from OUTSIDE the netns (it needs host connectivity to
     # proxy), configures the default route, and backgrounds itself.
@@ -530,9 +551,7 @@ netns_launch() {
     # the forwarder; load-bearing only on stub-resolver hosts, where the launch
     # path repoints Claude's resolv.conf at JAIL_DNS_FWD.
     if ! pasta --config-net --dns-forward "$JAIL_DNS_FWD" --quiet --log-file /tmp/claude-pasta.log "$holder" 2>>/tmp/claude-pasta.log; then
-        echo "claude-sandbox: egress jail — pasta failed to attach to the netns (see /tmp/claude-pasta.log)" >&2
-        kill "$holder" 2>/dev/null || true
-        exit 1
+        jail_fail "— pasta failed to attach to the netns (see /tmp/claude-pasta.log)" "$holder"
     fi
     : > "$CLAUDE_JAIL_READY"
 
@@ -557,6 +576,44 @@ check_dot_claude_persistence() {
     printf 'See https://gilesknap.github.io/claude-sandbox/how-to/persist-login-and-memory.html\n\n' >&2
     read -rsp "Press any key to continue..." -n 1 _key </dev/tty
     printf '\n\n' >&2
+}
+
+# render_gitconfig: (re)write $CLAUDE_SANDBOX_GITCONFIG_PATH from the host's
+# current git identity. Called on every launch because VS Code's
+# dev.containers.copyGitConfig fires AFTER postCreate, so an install-time render
+# can have an empty user.name; by the time the user types `claude`, copyGitConfig
+# has run, and this re-render makes the [user] block reflect the real identity.
+render_gitconfig() {
+    local git_name git_email
+    git_name=$(git config --get user.name 2>/dev/null || true)
+    git_email=$(git config --get user.email 2>/dev/null || true)
+    {
+        cat <<EOF
+[user]
+    name = $git_name
+    email = $git_email
+EOF
+        if [ "${CLAUDE_SANDBOX_NO_FORGE:-}" != "1" ]; then
+            cat <<'EOF'
+[credential "https://github.com"]
+    helper = !gh auth git-credential
+[credential "https://gitlab.diamond.ac.uk"]
+    helper = !glab auth git-credential
+EOF
+        fi
+        cat <<'EOF'
+[url "https://github.com/"]
+    insteadOf = git@github.com:
+    insteadOf = ssh://git@github.com/
+[url "https://gitlab.diamond.ac.uk/"]
+    insteadOf = git@gitlab.diamond.ac.uk:
+    insteadOf = ssh://git@gitlab.diamond.ac.uk/
+[init]
+    defaultBranch = main
+[safe]
+    directory = *
+EOF
+    } > "$CLAUDE_SANDBOX_GITCONFIG_PATH"
 }
 
 # Guard: tests source this file with CLAUDE_SHADOW_SOURCE_ONLY=1 so
@@ -587,40 +644,7 @@ fi
 # exit. touch is a no-op on an existing file apart from mtime.
 touch "${HOME:-/root}/.claude.json"
 
-# Refresh /etc/claude-gitconfig from the host's current git identity on
-# every launch. VS Code's dev.containers.copyGitConfig fires AFTER
-# postCreate so the install-time render can have empty user.name. By
-# the time the user types `claude`, copyGitConfig has run — re-render
-# here so the [user] block always reflects the current host identity.
-git_name=$(git config --get user.name 2>/dev/null || true)
-git_email=$(git config --get user.email 2>/dev/null || true)
-{
-    cat <<EOF
-[user]
-    name = $git_name
-    email = $git_email
-EOF
-    if [ "${CLAUDE_SANDBOX_NO_FORGE:-}" != "1" ]; then
-        cat <<'EOF'
-[credential "https://github.com"]
-    helper = !gh auth git-credential
-[credential "https://gitlab.diamond.ac.uk"]
-    helper = !glab auth git-credential
-EOF
-    fi
-    cat <<'EOF'
-[url "https://github.com/"]
-    insteadOf = git@github.com:
-    insteadOf = ssh://git@github.com/
-[url "https://gitlab.diamond.ac.uk/"]
-    insteadOf = git@gitlab.diamond.ac.uk:
-    insteadOf = ssh://git@gitlab.diamond.ac.uk/
-[init]
-    defaultBranch = main
-[safe]
-    directory = *
-EOF
-} > "$CLAUDE_SANDBOX_GITCONFIG_PATH"
+render_gitconfig
 
 parse_config "$CONFIG_PATH"
 # Stage the jail's DNS override (issue #60) before the argv is built — on a
@@ -637,13 +661,14 @@ mapfile -t ARGV < <(bwrap_argv_build "$WORKSPACE_ROOT" "$REAL_CLAUDE" "$@")
 # pseudo-terminal. SIGWINCH propagates, job control works, and TIOCSTI
 # is defanged (an ioctl inside the sandbox lands in script's pty, which
 # script reads and writes back as bytes — not keystrokes — to the host
-# terminal).
+# terminal). Build the script(1) command once for both launch paths.
+SANDBOX_CMD="$(printf '%q ' "${ARGV[@]}")"
 if egress_jail_enabled; then
     # ADR 0015 (on by default): run the sandbox inside a pasta-bridged netns
     # with a routing allowlist. netns_launch cannot `exec` — it must stay
     # foreground to drive the holder/pasta handshake — so it exits with the
     # sandbox's status. Disable per host with CLAUDE_SANDBOX_EGRESS_JAIL=0.
-    netns_launch script -q -E never -c "$(printf '%q ' "${ARGV[@]}")" /dev/null
+    netns_launch script -q -E never -c "$SANDBOX_CMD" /dev/null
 else
-    exec script -q -E never -c "$(printf '%q ' "${ARGV[@]}")" /dev/null
+    exec script -q -E never -c "$SANDBOX_CMD" /dev/null
 fi
