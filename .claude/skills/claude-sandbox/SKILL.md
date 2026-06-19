@@ -312,8 +312,19 @@ their own `~/.claude/settings.json`. Two hooks, wired by
   (SessionStart only injects messages/context — exit 2 does *not* abort).
 - `UserPromptSubmit` → `/usr/libexec/claude-sandbox/sandbox-gate.sh`:
   lean fail-closed gate, `exit 2` (blocks the prompt) unless
-  `IS_SANDBOX=1`. Escape hatch: `CLAUDE_SANDBOX_ALLOW_UNWRAPPED=1`. Both
-  skip on `CLAUDE_CODE_REMOTE=true`.
+  `IS_SANDBOX=1`. Escape hatch: the ROOT-OWNED flag
+  `/etc/claude-code/allow-unwrapped` (stamped by `install.sh` when
+  `ALLOW_UNWRAPPED=1`, or `sudo touch`). It is a flag under `/etc`, NOT an
+  env var, because a confined Claude can write `~/.claude/settings.json`
+  (host-shared) and Claude Code exports its `env` block into later
+  sessions — so the old `CLAUDE_SANDBOX_ALLOW_UNWRAPPED=1` env hatch was
+  forgeable from inside the jail and persistently neutralised the gate on
+  a later unwrapped launch (deep-review H4). `/etc` is ro in the sandbox
+  and not host-shared. Both hooks skip on `CLAUDE_CODE_REMOTE=true`.
+  **Refuse as a regression:** re-introducing an env-var escape hatch for
+  the gate (or any gate-bypass signal a sandbox-rw / host-shared path can
+  set) — it reopens H4. The gate test in `tests/smoke.sh` asserts the
+  retired env var no longer bypasses.
 
 **Why managed-settings + `/usr/libexec`, not user-scope `~/.claude`**
 (this is the tamper-resistance that makes the native devcontainer
