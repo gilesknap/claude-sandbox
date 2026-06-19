@@ -64,11 +64,14 @@ else
     fail "shadow does not start with #!/usr/bin/env bash"
 fi
 
-# Guard scripts placed OFF the rw set under /usr/libexec (prefixed),
-# like the relocated real binary. Both executable, mode 0755.
+# Guard scripts + the /verify-sandbox phase-1 battery placed OFF the rw
+# set under /usr/libexec (prefixed), like the relocated real binary. All
+# executable, mode 0755 (the battery rides along for the same off-PATH,
+# ro-in-sandbox tamper-resistance).
 VERIFY_DEST="$PREFIX/usr/libexec/claude-sandbox/sandbox-verify.sh"
 GATE_DEST="$PREFIX/usr/libexec/claude-sandbox/sandbox-gate.sh"
-for g in "$VERIFY_DEST" "$GATE_DEST"; do
+BATTERY_DEST="$PREFIX/usr/libexec/claude-sandbox/verify-sandbox-battery.sh"
+for g in "$VERIFY_DEST" "$GATE_DEST" "$BATTERY_DEST"; do
     if [ -x "$g" ] && [ "$(stat -c '%a' "$g" 2>/dev/null)" = "755" ]; then
         pass
     else
@@ -134,7 +137,7 @@ fi
 # shadow, both guard scripts, the managed-settings + user-settings jq
 # merges (each must be a fixed point), and the conf.
 declare -A SUM_A
-for f in "$SHADOW_DEST" "$VERIFY_DEST" "$GATE_DEST" "$MANAGED" "$SETTINGS" "$CONF_DEST"; do
+for f in "$SHADOW_DEST" "$VERIFY_DEST" "$GATE_DEST" "$BATTERY_DEST" "$MANAGED" "$SETTINGS" "$CONF_DEST"; do
     SUM_A["$f"]="$(sha256sum "$f" | awk '{print $1}')"
 done
 
@@ -142,7 +145,7 @@ if ! run_install; then
     fail "second install run exited non-zero"
 fi
 
-for f in "$SHADOW_DEST" "$VERIFY_DEST" "$GATE_DEST" "$MANAGED" "$SETTINGS" "$CONF_DEST"; do
+for f in "$SHADOW_DEST" "$VERIFY_DEST" "$GATE_DEST" "$BATTERY_DEST" "$MANAGED" "$SETTINGS" "$CONF_DEST"; do
     if [ "${SUM_A[$f]}" = "$(sha256sum "$f" | awk '{print $1}')" ]; then
         pass
     else
@@ -308,6 +311,24 @@ if [ "$VERIFY_RC" -eq 0 ] && printf '%s' "$VERIFY_OUT" | grep -q 'OUTSIDE the bw
     pass
 else
     fail "verifier did not emit a non-blocking warning when unwrapped (rc=$VERIFY_RC)"
+fi
+
+# /verify-sandbox phase-1 battery: drive the INSTALLED script outside any
+# sandbox. It must RUN TO COMPLETION (header + a well-formed Summary line)
+# and exit NON-ZERO — IS_SANDBOX is unset here so at least check 01 fails.
+# This is the deterministic, no-live-claude guard for the script's
+# plumbing: it catches exactly the regression class that motivated
+# extracting the battery from the command markdown — broken awk field
+# refs ($1..$9 eaten by slash-command arg substitution) or a glob that
+# aborts under a non-bash shell would break the run or the format here.
+BATTERY_OUT="$(env -u IS_SANDBOX bash "$BATTERY_DEST" 2>/dev/null)"
+BATTERY_RC=$?
+if [ "$BATTERY_RC" -ne 0 ] \
+        && printf '%s\n' "$BATTERY_OUT" | grep -qx '/verify-sandbox: 20 checks' \
+        && printf '%s\n' "$BATTERY_OUT" | grep -qE '^  Summary: [0-9]+ PASS / [0-9]+ FAIL$'; then
+    pass
+else
+    fail "battery did not run-to-format-and-exit-nonzero outside the sandbox (rc=$BATTERY_RC)"
 fi
 
 # link_terminal_config ADOPT: a pre-existing *local* ~/.claude{,.json}
