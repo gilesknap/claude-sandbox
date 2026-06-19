@@ -54,11 +54,10 @@ That's enough to run claude-sandbox: a Debian/Ubuntu base, `remoteUser: root`
 so the installer can write its system files, the
 [egress jail](../how-to/network-egress-jail.md)'s required `runArg`, and a
 `workspaceMount` that puts your sibling projects alongside this one under
-`/workspaces`. Add a `postCreateCommand`
-and a bind mount to [persist your Claude login and settings across
-rebuilds](../how-to/persist-login-and-memory.md); every other key is in the
-[`devcontainer.json`
-reference](https://containers.dev/implementors/json_reference/).
+`/workspaces`.
+You may also want to [persist your Claude login and settings across rebuilds](../how-to/persist-login-and-memory.md).
+Other values you can configure are in the
+[`devcontainer.json` reference](https://containers.dev/implementors/json_reference/).
 
 ## You don't need VS Code
 

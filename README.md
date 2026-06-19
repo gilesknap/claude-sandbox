@@ -22,7 +22,8 @@ For this reason Claude code will default to asking for user approval for every t
 
 Hence, Anthropic recommend running Claude Code in an isolated environment where it does not have access to your credentials and you carefully control what network devices and filesystem folders it does have access to. claude-sandbox allows you to have that control inside a developer container running locally on your workstation.
 
-This report demonstrates that the sandbox is secure: https://gist.github.com/gilesknap/582a289874e65b89fc99f09df37cf121.
+This report demonstrates key sandbox isolation properties: https://gist.github.com/gilesknap/582a289874e65b89fc99f09df37cf121.
+
 
 
 ## Install
