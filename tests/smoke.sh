@@ -255,11 +255,38 @@ echo '{}' | env -u IS_SANDBOX bash "$GATE_DEST" >/dev/null 2>&1
 echo '{}' | env IS_SANDBOX=1 bash "$GATE_DEST" >/dev/null 2>&1
 [ "$?" -eq 0 ] && pass || fail "gate did not pass (exit 0) when wrapped"
 
+# Escape hatch is now a ROOT-OWNED FLAG FILE, not an env var (deep-review
+# H4): a confined Claude can forge ~/.claude/settings.json's "env" block,
+# so an env-var hatch was bypassable. CLAUDE_SANDBOX_GATE_FLAG is the test
+# seam pointing the gate's flag path at a tmpdir (the real default lives
+# under root-owned /etc).
+GATE_FLAG_DIR="$(mktemp -d)"
+register_cleanup "$GATE_FLAG_DIR"
+GATE_FLAG="$GATE_FLAG_DIR/allow-unwrapped"
+# Absent flag → still fail-closed even with the seam pointed at the tmpdir.
+echo '{}' | env -u IS_SANDBOX CLAUDE_SANDBOX_GATE_FLAG="$GATE_FLAG" bash "$GATE_DEST" >/dev/null 2>&1
+[ "$?" -eq 2 ] && pass || fail "gate did not block (exit 2) when unwrapped and flag absent"
+# Present root-owned flag → warn-only (gate passes).
+: > "$GATE_FLAG"
+echo '{}' | env -u IS_SANDBOX CLAUDE_SANDBOX_GATE_FLAG="$GATE_FLAG" bash "$GATE_DEST" >/dev/null 2>&1
+[ "$?" -eq 0 ] && pass || fail "gate did not honour the root-owned allow-unwrapped flag"
+# The OLD env-var hatch must NO LONGER work (it was the H4 forgery vector).
 echo '{}' | env -u IS_SANDBOX CLAUDE_SANDBOX_ALLOW_UNWRAPPED=1 bash "$GATE_DEST" >/dev/null 2>&1
-[ "$?" -eq 0 ] && pass || fail "gate did not honour CLAUDE_SANDBOX_ALLOW_UNWRAPPED escape hatch"
+[ "$?" -eq 2 ] && pass || fail "gate still honours the retired CLAUDE_SANDBOX_ALLOW_UNWRAPPED env hatch (H4 regression)"
 
 echo '{}' | env -u IS_SANDBOX CLAUDE_CODE_REMOTE=true bash "$GATE_DEST" >/dev/null 2>&1
 [ "$?" -eq 0 ] && pass || fail "gate did not skip on Claude Code Web"
+
+# install.sh stamps/removes the root-owned flag from ALLOW_UNWRAPPED. The
+# base install above ran without it, so the flag must be ABSENT (gate stays
+# fail-closed by default). A re-install with ALLOW_UNWRAPPED=1 must create
+# it; a subsequent re-install without it must remove it again.
+GATE_FLAG_DEST="$PREFIX/etc/claude-code/allow-unwrapped"
+[ ! -e "$GATE_FLAG_DEST" ] && pass || fail "default install left the gate escape-hatch flag present (should be fail-closed)"
+ALLOW_UNWRAPPED=1 run_install
+[ -f "$GATE_FLAG_DEST" ] && pass || fail "ALLOW_UNWRAPPED=1 install did not stamp $GATE_FLAG_DEST"
+run_install
+[ ! -e "$GATE_FLAG_DEST" ] && pass || fail "re-install without ALLOW_UNWRAPPED did not remove a stale $GATE_FLAG_DEST"
 
 VERIFY_OUT="$(echo '{}' | env -u IS_SANDBOX bash "$VERIFY_DEST" 2>/dev/null)"
 VERIFY_RC=$?

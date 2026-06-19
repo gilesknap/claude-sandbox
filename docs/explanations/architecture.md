@@ -250,7 +250,7 @@ graph TD
     ss --> ssact["full integrity battery once/session<br/>WARN loudly if IS_SANDBOX unset<br/>(cannot block)"]
     ups --> upsact{"IS_SANDBOX=1 ?"}
     upsact -->|yes| pass["exit 0 — prompt proceeds"]
-    upsact -->|no| block["exit 2 — BLOCK every prompt<br/>(unless ALLOW_UNWRAPPED=1)"]
+    upsact -->|no| block["exit 2 — BLOCK every prompt<br/>(unless /etc/claude-code/allow-unwrapped exists)"]
     upd --> noarm["updater can't re-arm the bypass"]
 ```
 
@@ -261,8 +261,11 @@ which re-relocates the binary and re-asserts the shadow. **`sandbox-verify.sh`**
 `SessionStart` hooks can only inject messages, never block. **`sandbox-gate.sh`**
 (`UserPromptSubmit`) is the one mechanism that can actually stop work: a
 sub-second `IS_SANDBOX=1` string compare that `exit 2`s (blocks) every prompt
-otherwise. Both skip on Claude Code Web (`CLAUDE_CODE_REMOTE=true`), and
-`CLAUDE_SANDBOX_ALLOW_UNWRAPPED=1` downgrades the gate to warn-only.
+otherwise. Both skip on Claude Code Web (`CLAUDE_CODE_REMOTE=true`), and the
+root-owned flag `/etc/claude-code/allow-unwrapped` downgrades the gate to
+warn-only — a flag under `/etc` rather than an env var because a confined
+Claude can forge an env var via `~/.claude/settings.json` but cannot write
+`/etc` (deep-review H4).
 
 Why a user editing `~/.claude/settings.json` cannot disable it: the hook
 *entries* live in the managed-settings layer, which outranks user settings and
