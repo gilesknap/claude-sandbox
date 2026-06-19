@@ -314,6 +314,12 @@ link_terminal_config() {
 GUARD_LIBEXEC="/usr/libexec/claude-sandbox"
 VERIFY_PATH="$GUARD_LIBEXEC/sandbox-verify.sh"
 GATE_PATH="$GUARD_LIBEXEC/sandbox-gate.sh"
+# The /verify-sandbox phase-1 battery lives next to the guard scripts —
+# off-PATH, root-owned, ro inside the sandbox — so a compromised in-session
+# Claude (the workspace is rw) cannot rewrite the verifier to print PASS for
+# a broken sandbox. It is NOT a hook (not wired into managed-settings); the
+# /verify-sandbox command runs it by absolute path for the live battery.
+BATTERY_PATH="$GUARD_LIBEXEC/verify-sandbox-battery.sh"
 VERIFY_CMD="bash $VERIFY_PATH"
 GATE_CMD="bash $GATE_PATH"
 MANAGED_SETTINGS="/etc/claude-code/managed-settings.json"
@@ -326,10 +332,13 @@ USER_SL_CMD='bash $HOME/.claude/statusline-command.sh'
 
 # install_guard_scripts: place the guard scripts off the user's PATH and
 # off the sandbox rw set (same neighbourhood as the relocated real
-# binary). Root-owned, ro inside the sandbox.
+# binary). Root-owned, ro inside the sandbox. The /verify-sandbox phase-1
+# battery rides along for the same tamper-resistance (it's not a hook,
+# just an off-PATH script the command invokes by absolute path).
 install_guard_scripts() {
-    install_file "$SCRIPT_DIR/sandbox-verify.sh" "$(prefixed "$VERIFY_PATH")"
-    install_file "$SCRIPT_DIR/sandbox-gate.sh"   "$(prefixed "$GATE_PATH")"
+    install_file "$SCRIPT_DIR/sandbox-verify.sh"          "$(prefixed "$VERIFY_PATH")"
+    install_file "$SCRIPT_DIR/sandbox-gate.sh"            "$(prefixed "$GATE_PATH")"
+    install_file "$SCRIPT_DIR/verify-sandbox-battery.sh"  "$(prefixed "$BATTERY_PATH")"
 }
 
 # wire_gate_flag: stamp (ALLOW_UNWRAPPED=1) or remove the ROOT-OWNED gate
@@ -490,6 +499,7 @@ main() {
     echo "  real claude: $(prefixed /usr/libexec/claude-sandbox/claude)"
     echo "  config:      $(prefixed /etc/claude-sandbox.conf)"
     echo "  guard:       $(prefixed "$VERIFY_PATH"), $(prefixed "$GATE_PATH") (off-PATH, ro in sandbox)"
+    echo "  battery:     $(prefixed "$BATTERY_PATH") (off-PATH, ro in sandbox; /verify-sandbox phase 1)"
     echo "  managed:     $(prefixed "$MANAGED_SETTINGS") (SessionStart + UserPromptSubmit + DISABLE_AUTOUPDATER)"
     echo "  gate hatch:  $(prefixed "$GATE_FLAG_PATH") $([ "$ALLOW_UNWRAPPED" = "1" ] && echo 'PRESENT — gate warn-only (unwrapped permitted)' || echo 'absent — gate fail-closed')"
     echo "  statusline:  $USER_HOME/.claude/settings.json (preference only)"
