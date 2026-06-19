@@ -256,23 +256,37 @@ echo '{}' | env IS_SANDBOX=1 bash "$GATE_DEST" >/dev/null 2>&1
 [ "$?" -eq 0 ] && pass || fail "gate did not pass (exit 0) when wrapped"
 
 # Escape hatch is now a ROOT-OWNED FLAG FILE, not an env var (deep-review
-# H4): a confined Claude can forge ~/.claude/settings.json's "env" block,
-# so an env-var hatch was bypassable. CLAUDE_SANDBOX_GATE_FLAG is the test
-# seam pointing the gate's flag path at a tmpdir (the real default lives
-# under root-owned /etc).
+# H4): a confined Claude can forge ~/.claude/settings.json's "env" block, so
+# any env-driven hatch is bypassable. The gate HARD-CODES the flag path and
+# is not env-overridable; the decision is unit-tested through the inner
+# gate_allows() (an argument seam, not a forgeable variable), reached by
+# SOURCING the gate — its BASH_SOURCE/$0 guard skips gate_main when sourced.
 GATE_FLAG_DIR="$(mktemp -d)"
 register_cleanup "$GATE_FLAG_DIR"
 GATE_FLAG="$GATE_FLAG_DIR/allow-unwrapped"
-# Absent flag → still fail-closed even with the seam pointed at the tmpdir.
-echo '{}' | env -u IS_SANDBOX CLAUDE_SANDBOX_GATE_FLAG="$GATE_FLAG" bash "$GATE_DEST" >/dev/null 2>&1
-[ "$?" -eq 2 ] && pass || fail "gate did not block (exit 2) when unwrapped and flag absent"
-# Present root-owned flag → warn-only (gate passes).
+# Absent flag → gate_allows refuses (would block).
+if ( unset IS_SANDBOX CLAUDE_CODE_REMOTE; source "$GATE_DEST"; gate_allows "$GATE_FLAG" ); then
+    fail "gate_allows passed with the allow-unwrapped flag absent"
+else
+    pass
+fi
+# Present flag → gate_allows accepts (operator escape hatch honoured).
 : > "$GATE_FLAG"
-echo '{}' | env -u IS_SANDBOX CLAUDE_SANDBOX_GATE_FLAG="$GATE_FLAG" bash "$GATE_DEST" >/dev/null 2>&1
-[ "$?" -eq 0 ] && pass || fail "gate did not honour the root-owned allow-unwrapped flag"
-# The OLD env-var hatch must NO LONGER work (it was the H4 forgery vector).
+if ( unset IS_SANDBOX CLAUDE_CODE_REMOTE; source "$GATE_DEST"; gate_allows "$GATE_FLAG" ); then
+    pass
+else
+    fail "gate_allows did not honour a present root-owned allow-unwrapped flag"
+fi
+# Executed gate, unwrapped, no real /etc flag → fail-closed default (exit 2).
+echo '{}' | env -u IS_SANDBOX -u CLAUDE_CODE_REMOTE bash "$GATE_DEST" >/dev/null 2>&1
+[ "$?" -eq 2 ] && pass || fail "gate did not fail-closed (exit 2) when unwrapped with no flag"
+# The retired CLAUDE_SANDBOX_ALLOW_UNWRAPPED env hatch must NOT work.
 echo '{}' | env -u IS_SANDBOX CLAUDE_SANDBOX_ALLOW_UNWRAPPED=1 bash "$GATE_DEST" >/dev/null 2>&1
 [ "$?" -eq 2 ] && pass || fail "gate still honours the retired CLAUDE_SANDBOX_ALLOW_UNWRAPPED env hatch (H4 regression)"
+# The removed CLAUDE_SANDBOX_GATE_FLAG seam must NOT let env redirect the flag
+# path at an attacker-controlled, always-present file (the seam-reopens-H4 fix).
+echo '{}' | env -u IS_SANDBOX CLAUDE_SANDBOX_GATE_FLAG=/etc/hostname bash "$GATE_DEST" >/dev/null 2>&1
+[ "$?" -eq 2 ] && pass || fail "gate honoured a CLAUDE_SANDBOX_GATE_FLAG env override (H4 seam reopened)"
 
 echo '{}' | env -u IS_SANDBOX CLAUDE_CODE_REMOTE=true bash "$GATE_DEST" >/dev/null 2>&1
 [ "$?" -eq 0 ] && pass || fail "gate did not skip on Claude Code Web"

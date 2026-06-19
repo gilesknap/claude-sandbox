@@ -317,10 +317,10 @@ GATE_PATH="$GUARD_LIBEXEC/sandbox-gate.sh"
 VERIFY_CMD="bash $VERIFY_PATH"
 GATE_CMD="bash $GATE_PATH"
 MANAGED_SETTINGS="/etc/claude-code/managed-settings.json"
-# Root-owned escape-hatch flag the gate checks (its default path; keep in
-# sync with sandbox-gate.sh's CLAUDE_SANDBOX_GATE_FLAG default). Under
-# /etc — ro inside the sandbox, not host-shared — so only root (or a
-# deliberate ./install) can create it; a confined Claude cannot (H4).
+# Root-owned escape-hatch flag the gate checks (keep in sync with
+# sandbox-gate.sh's hard-coded ALLOW_UNWRAPPED_FLAG). Under /etc — ro inside
+# the sandbox, not host-shared — so only root (or a deliberate ./install) can
+# create it; a confined Claude cannot (H4).
 GATE_FLAG_PATH="/etc/claude-code/allow-unwrapped"
 USER_SL_CMD='bash $HOME/.claude/statusline-command.sh'
 
