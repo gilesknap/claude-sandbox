@@ -14,6 +14,14 @@
 # => internet + DNS work; lateral movement to internal hosts (incl. same-subnet)
 #    is blocked except the allow-listed devices.
 #
+# Stub-resolver DNS (issue #60): when /etc/resolv.conf names ONLY loopback
+# resolvers (systemd-resolved 127.0.0.53, Tailscale MagicDNS) they're
+# unreachable from the netns, so the probe mirrors the claude-shadow fix —
+# pasta --dns-forward listens on JAIL_DNS_FWD (RFC5737 192.0.2.53) inside the
+# netns and relays to the host's real resolvers, and the INNER bwrap gets a
+# resolv.conf pointed at that forwarder. This box (127.0.0.53 + Tailscale) is
+# exactly the affected config, so the DNS+egress test exercises the fix.
+#
 # Topology (unchanged from v1): parent unshare -rn holder owns a user+net-only ns
 # (so /proc stays valid for nested bwrap); pasta attaches from OUTSIDE by PID;
 # holder locks routes; holder execs bwrap --cap-drop ALL (NOT capless — nested
@@ -26,6 +34,7 @@
 #   HOSTNAME    name:port for the DNS+egress test (default api.anthropic.com:443)
 set -uo pipefail
 DEV="${1:-}"; NAME="${2:-api.anthropic.com:443}"; export DEV NAME
+JAIL_DNS_FWD="192.0.2.53"; export JAIL_DNS_FWD
 
 if [ "${IS_SANDBOX:-}" = 1 ] || \
    [ "$(awk '/CapBnd/{print $2}' /proc/self/status)" = 0000000000000000 ]; then
@@ -42,6 +51,16 @@ PASTA_ERR="$RUNDIR/jail.pasta.err"
 INNER=$(mktemp); HOLD=$(mktemp); export INNER
 trap 'rm -f "$INNER" "$HOLD"; rm -rf "$RUNDIR"; [ -n "${HOLDER:-}" ] && kill "$HOLDER" 2>/dev/null || true' EXIT
 
+# Stub-resolver detection (issue #60): if every /etc/resolv.conf nameserver is
+# loopback, stage a resolv.conf pointed at the pasta forwarder for INNER.
+RESOLV_FWD=""; export RESOLV_FWD
+if ! awk '/^[[:space:]]*nameserver/{print $2}' /etc/resolv.conf 2>/dev/null \
+     | grep -qvE '^(127\.|::1$)'; then
+  RESOLV_FWD="$RUNDIR/resolv.forward"
+  printf 'nameserver %s\n' "$JAIL_DNS_FWD" > "$RESOLV_FWD"
+  echo "  [probe] loopback-only resolv.conf — INNER will resolve via pasta forwarder $JAIL_DNS_FWD"
+fi
+
 # INNER — Claude's vantage inside bwrap. Asserts the policy via `ip route get`
 # (no traffic) plus real connectivity. NAME/DEV/JAIL_* arrive as env vars.
 cat > "$INNER" <<'EOF'
@@ -53,9 +72,12 @@ echo "INFO  CapBnd=$caps (full expected; security = ancestor-userns ownership)"
 
 echo "  --- routing policy (ip route get, no traffic) ---"
 echo "$(rget 1.1.1.1)" | grep -q "via ${JAIL_GW:-x}" && echo "PASS  internet routed via gateway $JAIL_GW" || echo "WARN  internet route: $(rget 1.1.1.1)"
-fdns=$(printf '%s\n' ${JAIL_DNS:-} | awk 'NF{print;exit}')
+# Active resolver: the first routable upstream, else the pasta forwarder
+# (issue #60 — stub-resolver hosts resolve through JAIL_DNS_FWD).
+fdns=$(printf '%s\n' ${JAIL_DNS:-} | grep -vE '^(127\.|::1$)' | awk 'NF{print;exit}')
+[ -n "$fdns" ] || fdns="${JAIL_DNS_FWD:-}"
 if [ -n "$fdns" ]; then
-  echo "$(rget "$fdns")" | grep -q "via ${JAIL_GW:-x}" && echo "PASS  DNS $fdns routed via gateway" || echo "WARN  DNS route: $(rget "$fdns")"
+  echo "$(rget "$fdns")" | grep -q "via ${JAIL_GW:-x}" && echo "PASS  active resolver $fdns routed via gateway" || echo "WARN  resolver route: $(rget "$fdns")"
 fi
 if [ -n "${JAIL_SUBNET:-}" ]; then
   b=${JAIL_SUBNET%/*}; tl=${b%.*}.1; [ "$tl" = "${JAIL_GW:-}" ] && tl=${b%.*}.2
@@ -116,12 +138,19 @@ for ns in "${dns[@]:-}"; do
   case "$ns" in 127.*|::1|"$gw") continue;; esac
   ip route replace "$ns/32" via "$gw" || echo "  [holder] WARN: failed DNS punch-back for $ns"
 done
+# Forwarder /32 (issue #60): route the in-netns forwarder address via gw so its
+# queries reach pasta's tap. Always safe — the address is globally non-routable.
+ip route replace "$JAIL_DNS_FWD/32" via "$gw" || echo "  [holder] WARN: failed DNS forwarder punch-back for $JAIL_DNS_FWD"
 if [ -n "${DEV:-}" ]; then
   ip route replace "${DEV%:*}/32" via "$gw" || echo "  [holder] WARN: failed allow-ip punch-back for ${DEV%:*}"
 fi
 
 export JAIL_GW="$gw" JAIL_SUBNET="${subnet:-}" JAIL_DNS="${dns[*]:-}"
-exec bwrap --ro-bind / / --dev /dev --unshare-pid --cap-drop ALL -- bash "$INNER"
+# On a stub-resolver host, point INNER's resolv.conf at the pasta forwarder
+# (mirrors the claude-shadow bind); otherwise INNER keeps the host resolv.conf.
+resolv_bind=()
+[ -n "${RESOLV_FWD:-}" ] && [ -r "${RESOLV_FWD:-}" ] && resolv_bind=(--ro-bind "$RESOLV_FWD" /etc/resolv.conf)
+exec bwrap --ro-bind / / "${resolv_bind[@]}" --dev /dev --unshare-pid --cap-drop ALL -- bash "$INNER"
 EOF
 
 unshare -rn bash "$HOLD" &
@@ -129,7 +158,7 @@ HOLDER=$!
 for _ in $(seq 1 200); do [ -e "/proc/$HOLDER/ns/net" ] && break; sleep 0.05; done
 [ -e "/proc/$HOLDER/ns/net" ] || { echo "FAIL  holder netns never appeared"; exit 5; }
 
-if pasta --config-net "$HOLDER" 2>"$PASTA_ERR"; then
+if pasta --config-net --dns-forward "$JAIL_DNS_FWD" "$HOLDER" 2>"$PASTA_ERR"; then
   echo "  [probe] pasta attached to holder netns (pid $HOLDER)"
 else
   echo "  [probe] pasta attach FAILED:"; sed 's/^/    /' "$PASTA_ERR"

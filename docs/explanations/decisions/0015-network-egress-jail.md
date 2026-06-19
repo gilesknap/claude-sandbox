@@ -85,6 +85,22 @@ Channel Access broadcast are untouched. Only the shadow's launch is jailed:
   routes locked → *then* Claude runs) is load-bearing for the boundary. The
   blackholes are fail-closed (a failed one aborts the launch); the device/DNS
   punches are fail-soft (a missing one is lost reachability, not an open hole).
+- **Stub-resolver DNS via a pasta forwarder.** Punching `/32`s for the
+  `/etc/resolv.conf` resolvers only works when those resolvers are *routable*.
+  On a personal Ubuntu desktop the sole resolver is a **loopback stub**
+  (`127.0.0.53` from systemd-resolved, or Tailscale MagicDNS) that lives in the
+  **host** netns and answers nothing inside the jail — so every lookup gets
+  `ECONNREFUSED` and the API looks down (issue #60). The fix: pasta attaches with
+  `--dns-forward 192.0.2.53` (an RFC5737 TEST-NET address — globally
+  non-routable, outside every blackholed range), making it listen on that
+  address *inside* the netns and relay DNS to the host's real resolvers (pasta
+  runs in the host netns, so it reaches the loopback stub). When `claude-shadow`
+  detects an all-loopback `/etc/resolv.conf`, it binds a one-line
+  `nameserver 192.0.2.53` over Claude's `/etc/resolv.conf` and the holder routes
+  that `/32` via the gateway. Hosts with routable resolvers are unchanged (the
+  forwarder is staged but unused). Resolution stays *proxied* and internal IPs
+  stay blackholed, so the boundary is intact; if no resolver can be established
+  at all the jail says so rather than failing silently.
 - **Security rests on userns ownership, not caplessness.** Claude is *not*
   capless here: because bwrap nests its userns inside the holder's unprivileged
   userns, the new userns grants Claude a **full** capability set (`CapBnd` =
