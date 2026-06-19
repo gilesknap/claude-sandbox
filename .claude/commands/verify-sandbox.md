@@ -331,12 +331,15 @@ grep -qF 'CONFIG_PATH="/etc/claude-sandbox.conf"' "$shadow" \
 
 The per-process egress jail (ADR 0015, Design D) runs Claude inside a
 dedicated network namespace whose routing table blackholes the RFC1918
-ranges (`10/8`, `172.16/12`, `192.168/16`) and the connected subnet,
-punching back only the gateway, DNS resolvers, and `allow-ip` devices.
-This check asserts the netns is actually programmed: a default route
-exists **and** all three RFC1918 blackhole routes are present. It catches
-a fail-*open* regression (the jail being skipped while Claude still
-launches) and partial programming (e.g. only `10/8` blackholed).
+ranges (`10/8`, `172.16/12`, `192.168/16`), the CGNAT range
+(`100.64/10`, Tailscale et al.), and every connected subnet, punching
+back only the gateway, DNS resolvers, and `allow-ip` devices. The netns
+is IPv4-only (pasta `--ipv4-only`), so there is no v6 address family to
+blackhole. This check asserts the netns is actually programmed: a default
+route exists **and** all three RFC1918 blackhole routes **and** the CGNAT
+blackhole are present. It catches a fail-*open* regression (the jail being
+skipped while Claude still launches) and partial programming (e.g. only
+`10/8` blackholed, or CGNAT dropped so Tailscale internal hosts leak).
 
 The jail is fail-*closed* by design — `netns_holder` aborts (so Claude
 never starts) if any blackhole route fails — so a running session is
@@ -355,11 +358,13 @@ a "jail not active (disabled)" note rather than false-failing the opt-out.
 # programmed them (netns_holder), so their presence is the active marker.
 routes="$(ip route show 2>/dev/null)"
 if printf '%s\n' "$routes" | grep -qE '^blackhole (10\.0\.0\.0/8|172\.16\.0\.0/12|192\.168\.0\.0/16)'; then
-    # Jail active → require the full RFC1918 blackhole set + a default route,
-    # else the jail programmed only part of its allowlist (regression).
+    # Jail active → require the full RFC1918 blackhole set, the CGNAT blackhole,
+    # and a default route, else the jail programmed only part of its allowlist
+    # (regression — e.g. CGNAT dropped, leaking Tailscale internal hosts).
     printf '%s\n' "$routes" | grep -qE '^blackhole 10\.0\.0\.0/8'      && \
     printf '%s\n' "$routes" | grep -qE '^blackhole 172\.16\.0\.0/12'   && \
     printf '%s\n' "$routes" | grep -qE '^blackhole 192\.168\.0\.0/16'  && \
+    printf '%s\n' "$routes" | grep -qE '^blackhole 100\.64\.0\.0/10'   && \
     printf '%s\n' "$routes" | grep -qE '^default '
 else
     # No blackhole routes → jail deliberately disabled; opt-out is not a failure.
@@ -382,15 +387,18 @@ The broad probe addresses (`10.255.255.254`, `172.31.255.254`,
 resolver, or `allow-ip` device is implausible; the jail punches only
 specific `/32`s back through the blackhole, so these resolve to
 `unreachable`. These exercise the generic RFC1918 blackholes — but the
-jail *also* blackholes the **connected subnet** (the host's own LAN), and
-that is the higher-value lateral-movement case: a neighbour one hop away
-on the same wire. So the check additionally derives that subnet and probes
-it. The connected-subnet blackhole is the one `blackhole` line that is
-*not* a generic RFC1918 range, and the probe uses its **network base
+jail *also* blackholes **every connected subnet** (the host's own LANs),
+and that is the higher-value lateral-movement case: a neighbour one hop
+away on the same wire. So the check additionally derives a connected
+subnet and probes it. A connected-subnet blackhole is a `blackhole` line
+that is *not* one of the generic ranges the jail always programs — RFC1918,
+CGNAT (`100.64/10`), or link-local — and the probe uses its **network base
 address** (the part before `/`) — guaranteed in-subnet, and never one of
 the host `/32`s the jail punches back (gateway / resolver / `allow-ip`),
-so it can't accidentally hit an allowed route. As with check 19, when the
-jail is disabled (no blackhole routes) the check PASSES with a note.
+so it can't accidentally hit an allowed route. (The jail may blackhole
+several connected subnets; probing the first is sufficient to prove the
+mechanism.) As with check 19, when the jail is disabled (no blackhole
+routes) the check PASSES with a note.
 
 ```bash
 # `ip route get <ip>` returns non-zero ("Network is unreachable") for a
@@ -398,11 +406,14 @@ jail is disabled (no blackhole routes) the check PASSES with a note.
 # instantaneous FIB query with no connection attempt or timing ambiguity.
 if ip route show 2>/dev/null | grep -qE '^blackhole (10\.0\.0\.0/8|172\.16\.0\.0/12|192\.168\.0\.0/16)'; then
     blocked=1
-    probes=(10.255.255.254 172.31.255.254 192.168.255.254)
-    # Connected subnet (host LAN): the non-RFC1918-generic blackhole line.
-    # Probe its network base — in-subnet by construction, never a punched /32.
+    probes=(10.255.255.254 172.31.255.254 192.168.255.254 100.127.255.254)
+    # Connected subnet (host LAN): a blackhole line that is NOT one of the
+    # generic ranges the jail always programs (RFC1918, CGNAT 100.64/10, or
+    # link-local 169.254/16). Probe its network base — in-subnet by
+    # construction, never a punched /32. (Several may be blackholed; the first
+    # is enough to prove the connected-subnet blackhole works.)
     subnet="$(ip route show 2>/dev/null | awk '/^blackhole /{print $2}' \
-        | grep -vxE '10\.0\.0\.0/8|172\.16\.0\.0/12|192\.168\.0\.0/16|169\.254\.0\.0/16' | head -n1)"
+        | grep -vxE '10\.0\.0\.0/8|172\.16\.0\.0/12|192\.168\.0\.0/16|100\.64\.0\.0/10|169\.254\.0\.0/16' | head -n1)"
     [ -n "$subnet" ] && probes+=("${subnet%/*}")
     for ip in "${probes[@]}"; do
         # Reachable (route resolved) → lateral egress leaked for this range.

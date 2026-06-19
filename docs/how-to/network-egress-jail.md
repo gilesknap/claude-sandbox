@@ -1,11 +1,12 @@
 # Configure the network egress jail
 
-The egress jail runs Claude in its own network namespace and blackholes
-RFC1918 (`10/8`, `172.16/12`, `192.168/16`) and link-local (`169.254/16`) so a
+The egress jail runs Claude in its own **IPv4-only** network namespace and
+blackholes RFC1918 (`10/8`, `172.16/12`, `192.168/16`), CGNAT (`100.64/10`,
+Tailscale et al.), every connected subnet, and link-local (`169.254/16`) so a
 compromised or prompt-injected session **cannot pivot to internal hosts or lab
-devices** (EPICS IOCs, PMAC). The internet, DNS, and any IPs you allow stay
-reachable. It is **on by default** ({ref}`adr-network-egress-jail`) and
-**fail-closed**. Normal, non-Claude shells keep host networking untouched.
+devices** (EPICS IOCs, PMAC) — over IPv4 or IPv6. The internet, DNS, and any IPs
+you allow stay reachable. It is **on by default** ({ref}`adr-network-egress-jail`)
+and **fail-closed**. Normal, non-Claude shells keep host networking untouched.
 
 For the design rationale and how it meshes with Claude Code's native sandbox,
 see [the egress jail and the native sandbox](../explanations/threat-model.md#the-egress-jail-and-the-native-sandbox).

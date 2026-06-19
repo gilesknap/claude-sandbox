@@ -185,8 +185,10 @@ motivates this — reach lab devices with default credentials (EPICS IOCs, PMAC)
 *safety* incident, not merely an information one.
 
 The jail ({ref}`adr-network-egress-jail`) runs *only* Claude in a per-process
-network namespace beneath bwrap. A routing allowlist blackholes `10/8`,
-`172.16/12`, `192.168/16`, the connected subnet, and link-local `169.254/16`,
+network namespace beneath bwrap. The netns is **IPv4-only** (pasta `--ipv4-only`),
+so there is no IPv6 address family to pivot over. A routing allowlist blackholes
+`10/8`, `172.16/12`, `192.168/16`, the CGNAT range `100.64/10` (Tailscale et al.),
+every connected subnet, and link-local `169.254/16`,
 leaving the internet, DNS, and the device IPs you list as `allow-ip` reachable —
 so Claude still works while a compromised session has nowhere internal to pivot.
 It is **fail-closed**: if `/dev/net/tun`, pasta, or `unshare` is unavailable,
