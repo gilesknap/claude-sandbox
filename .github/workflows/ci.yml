@@ -73,6 +73,8 @@ jobs:
     # devcontainer) CAN grant the caps, the assertions run for real. Kept a
     # separate job (not folded into `test`) so a skip here is obvious in the CI
     # matrix and the job's log makes the skip explicit rather than silent.
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
