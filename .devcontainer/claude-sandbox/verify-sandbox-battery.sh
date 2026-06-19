@@ -58,6 +58,16 @@ result() {
     fi
 }
 
+# mount_fstype MOUNTPOINT — print MOUNTPOINT's fs type from
+# /proc/self/mountinfo. The fs type is the token AFTER the single "-"
+# separator; the optional fields before it (field 7+) vary in count, so a
+# fixed column ($9) is unstable across hosts. Parse by the separator.
+mount_fstype() {
+    awk -v m="$1" '$5 == m {
+        for (i = 7; i <= NF; i++) if ($i == "-") { print $(i + 1); exit }
+    }' /proc/self/mountinfo
+}
+
 echo "/verify-sandbox: 20 checks"
 
 # 01 — IS_SANDBOX sentinel. Only `bwrap --setenv` sets it; unset means
@@ -146,34 +156,40 @@ case "$uts_link" in
 esac
 
 # 10 — private /dev: a fresh tmpfs/devtmpfs (not a bind of the host /dev).
-# mountinfo field 5 is the mount point, field 9 the fs type.
-dev_fstype="$(awk '$5 == "/dev" { print $9; exit }' /proc/self/mountinfo)"
+dev_fstype="$(mount_fstype /dev)"
 if printf '%s\n' "$dev_fstype" | grep -qE '^(tmpfs|devtmpfs)$'; then
     result 10 "private /dev: fresh tmpfs (TIOCSTI blocked)" 0
 else
     result 10 "private /dev: fresh tmpfs (TIOCSTI blocked)" 1 "/dev fstype is '${dev_fstype:-none}' (expected tmpfs/devtmpfs)"
 fi
 
-# 11 — /tmp tmpfs: VS Code IPC/git sockets masked. In bash an unmatched
-# glob passes through literally and `ls` fails, so `!` makes this PASS.
-if ! ls /tmp/vscode-ipc-*.sock /tmp/vscode-git-*.sock >/dev/null 2>&1; then
+# 11 — /tmp tmpfs (always --tmpfs): VS Code IPC/git sockets masked. In bash
+# an unmatched glob passes through literally and `ls` fails, so `!` PASSes.
+tmp_fstype="$(mount_fstype /tmp)"
+if [ "$tmp_fstype" = "tmpfs" ] \
+        && ! ls /tmp/vscode-ipc-*.sock /tmp/vscode-git-*.sock >/dev/null 2>&1; then
     result 11 "/tmp tmpfs: no vscode-ipc-*.sock visible" 0
 else
-    result 11 "/tmp tmpfs: no vscode-ipc-*.sock visible" 1 "a vscode-ipc/git socket is visible under /tmp"
+    result 11 "/tmp tmpfs: no vscode-ipc-*.sock visible" 1 "/tmp fstype='${tmp_fstype:-none}' or a vscode-ipc/git socket is visible"
 fi
 
-# 12 — /run/user masked (tmpfs, empty): no host DBus/IPC bridges.
-if [ -z "$(ls -A /run/user 2>/dev/null)" ]; then
+# 12 — /run/user masked: no host DBus/IPC bridges. The launcher only
+# --tmpfs-masks this when the host has /run/user, so absent ⇒ nothing to
+# mask (OK); a non-tmpfs *mount* present-but-empty must still FAIL.
+run_user_fstype="$(mount_fstype /run/user)"
+if [ "${run_user_fstype:-tmpfs}" = "tmpfs" ] && [ -z "$(ls -A /run/user 2>/dev/null)" ]; then
     result 12 "/run/user empty" 0
 else
-    result 12 "/run/user empty" 1 "/run/user is non-empty"
+    result 12 "/run/user empty" 1 "/run/user fstype='${run_user_fstype:-none}' or non-empty"
 fi
 
-# 13 — /run/secrets masked (tmpfs, empty): Docker/Compose secrets closed.
-if [ -z "$(ls -A /run/secrets 2>/dev/null)" ]; then
+# 13 — /run/secrets masked (Docker/Compose secrets). Same tmpfs-or-absent
+# rule as /run/user (launcher --tmpfs-masks only when the host has it).
+run_secrets_fstype="$(mount_fstype /run/secrets)"
+if [ "${run_secrets_fstype:-tmpfs}" = "tmpfs" ] && [ -z "$(ls -A /run/secrets 2>/dev/null)" ]; then
     result 13 "/run/secrets empty (Docker/Compose secrets masked)" 0
 else
-    result 13 "/run/secrets empty (Docker/Compose secrets masked)" 1 "/run/secrets is non-empty"
+    result 13 "/run/secrets empty (Docker/Compose secrets masked)" 1 "/run/secrets fstype='${run_secrets_fstype:-none}' or non-empty"
 fi
 
 # 14 — file mask: $HOME/.netrc bound to /dev/null (size zero).
