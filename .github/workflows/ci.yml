@@ -62,6 +62,44 @@ jobs:
           mkdir -p "$HOME/.claude" "$HOME/.cache"
           CLAUDE_SANDBOX_SMOKE=1 bash tests/promote.sh
 
+  egress-jail:
+    # Exercises the egress-jail netns routing enforcement (ADR 0015 / issue #56),
+    # which the rest of CI never touches: smoke.sh stays outside the netns and
+    # verify-sandbox's jail checks need a live jailed `claude` (manual). The test
+    # drives the REAL netns_holder in a throwaway netns and asserts the blackhole
+    # allowlist + fail-closed behaviour. It is CAPABILITY-GATED: if the runner
+    # cannot grant unshare + CAP_NET_ADMIN it SKIPs cleanly (exit 0) and LOGS what
+    # was skipped — so this job never flakes, but the moment a runner (or the
+    # devcontainer) CAN grant the caps, the assertions run for real. Kept a
+    # separate job (not folded into `test`) so a skip here is obvious in the CI
+    # matrix and the job's log makes the skip explicit rather than silent.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install netns deps (passt + iproute2)
+        run: |
+          sudo apt-get update -qq
+          # passt provides `pasta` (the live leg); iproute2 (`ip`) and
+          # util-linux (`unshare`) are normally preinstalled — install to be safe.
+          sudo apt-get install -y -qq --no-install-recommends \
+            passt iproute2 util-linux
+
+      # Ubuntu 24.04 runners ship kernel.apparmor_restrict_unprivileged_userns=1,
+      # which blocks the `unshare -rn` the holder needs. Relax it (mirrors the
+      # `test` job's bwrap workaround). If the runner still won't grant the caps,
+      # the test detects that and SKIPs — it never hard-fails on environment.
+      - name: Allow unprivileged userns on Ubuntu 24.04
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+
+      - name: Run egress-jail netns enforcement test
+        run: |
+          # The test self-gates on netns/CAP_NET_ADMIN (and pasta/tun for the
+          # live leg) and prints a clear SKIP line when caps are unavailable on
+          # the runner. Run it verbosely so the skip-vs-ran decision is visible
+          # in the job log (no silent no-op, no pretended coverage).
+          bash tests/egress_jail.sh
+
   lint:
     runs-on: ubuntu-latest
     steps:
