@@ -394,9 +394,17 @@ route_field() {
 # userns and is therefore NOT capless (full CapBnd) — but that netns is owned by
 # THIS (ancestor) userns, so Claude's caps confer no authority over it: route
 # edits / device adds fail EPERM from inside. Caplessness is not the boundary;
-# ancestor-userns ownership is. Fail-closed: any add of a blackhole route that
-# fails aborts the holder (set -e) so Claude never starts un-allowlisted.
+# ancestor-userns ownership is.
+#
+# Fail-closed: the function runs in a fresh `bash -c` (see netns_launch), so the
+# file-level `set -euo pipefail` does NOT reach it — the FIRST statement below
+# re-establishes it so an unhandled failure aborts the holder. On top of that,
+# every load-bearing blackhole/route step routes through jail_fail on failure, so
+# a failed `ip route` add can never let Claude start un-allowlisted (fail-OPEN).
+# IPv4-only: pasta attaches with --ipv4-only (netns_launch), so the netns has no
+# IPv6 at all — no v6/ULA/link-local address family to blackhole or punch.
 netns_holder() {
+    set -euo pipefail
     ip link set lo up
     wait_for test -f "$CLAUDE_JAIL_READY" \
         || jail_fail "— pasta never signalled ready"
@@ -410,27 +418,46 @@ netns_holder() {
     # themselves RFC1918, and the mirrored connected-subnet route (more specific
     # than the blackhole) would otherwise leave the whole local subnet reachable.
     # See ADR 0015 (validated by probe-network-jail.sh).
-    local def gw nic subnet
+    local def gw nic
     def="$(ip route show default 2>/dev/null | head -n1)"
     gw="$(route_field via <<< "$def")"
     nic="$(route_field dev <<< "$def")"
     if [ -z "$gw" ] || [ -z "$nic" ]; then
         jail_fail "— no default route via/dev after pasta attach"
     fi
-    subnet="$(ip -o route show dev "$nic" scope link 2>/dev/null | awk 'NR==1{print $1}' || true)"
+    # ALL connected (scope-link) subnets on the egress NIC, not just the first:
+    # pasta --config-net mirrors a connected route for EVERY on-link subnet, and
+    # each is more-specific than the RFC1918/CGNAT blackholes, so any subnet left
+    # un-blackholed stays fully reachable (longest-prefix-match wins). Enumerate
+    # them all and blackhole each below. (`ip -o` keeps one route per line.)
+    local -a subnets=()
+    mapfile -t subnets < <(ip -o route show dev "$nic" scope link 2>/dev/null \
+        | awk '{print $1}')
     local -a dns=()
     mapfile -t dns < <(awk '/^[[:space:]]*nameserver/{print $2}' /etc/resolv.conf 2>/dev/null)
 
-    # Gateway reachable on-link first, then blackhole everything internal
-    # (fail-closed: a failed blackhole aborts the holder via set -e, so Claude
-    # never starts with RFC1918 reachable), then re-punch the allowed routes.
-    ip route replace "$gw/32" dev "$nic"
-    [ -n "$subnet" ] && ip route replace blackhole "$subnet"
-    ip route replace blackhole   10.0.0.0/8
-    ip route replace blackhole   172.16.0.0/12
-    ip route replace blackhole   192.168.0.0/16
-    ip route replace unreachable 169.254.0.0/16
-    ip route replace default via "$gw" dev "$nic"
+    # Gateway reachable on-link first, then blackhole everything internal, then
+    # re-punch the allowed routes. Fail-closed: each load-bearing step (the
+    # gateway on-link route, every connected-subnet and RFC1918/CGNAT blackhole,
+    # the link-local unreachable, and the restored default) routes through
+    # jail_fail on failure — combined with the `set -euo pipefail` at the top of
+    # this function, a failed add aborts the holder so Claude never starts with an
+    # internal range reachable. CGNAT (100.64/10) is blackholed so a host on a
+    # Tailscale / CGNAT internal address cannot be pivoted to.
+    ip route replace "$gw/32" dev "$nic" \
+        || jail_fail "— failed to pin gateway $gw on-link (fail-closed)"
+    local subnet
+    for subnet in "${subnets[@]}"; do
+        [ -n "$subnet" ] || continue
+        ip route replace blackhole "$subnet" \
+            || jail_fail "— failed to blackhole connected subnet $subnet (fail-closed)"
+    done
+    ip route replace blackhole   10.0.0.0/8       || jail_fail "— failed to blackhole 10.0.0.0/8 (fail-closed)"
+    ip route replace blackhole   172.16.0.0/12    || jail_fail "— failed to blackhole 172.16.0.0/12 (fail-closed)"
+    ip route replace blackhole   192.168.0.0/16   || jail_fail "— failed to blackhole 192.168.0.0/16 (fail-closed)"
+    ip route replace blackhole   100.64.0.0/10    || jail_fail "— failed to blackhole 100.64.0.0/10 CGNAT (fail-closed)"
+    ip route replace unreachable 169.254.0.0/16   || jail_fail "— failed to mark 169.254.0.0/16 unreachable (fail-closed)"
+    ip route replace default via "$gw" dev "$nic" || jail_fail "— failed to restore default via $gw (fail-closed)"
 
     # DNS resolvers — needed for the tool to function; resolution is not lateral
     # movement (connections to internal IPs stay blackholed). Fail-soft.
@@ -545,12 +572,17 @@ netns_launch() {
     # pasta prints an early IPv6 notice to stderr *before* it opens --log-file,
     # so flags can't suppress it; redirect stderr to the same log so the terminal
     # stays clean while early-startup failures are still captured.
+    # --ipv4-only (ADR 0015, H1): give the netns NO IPv6 at all. Without it pasta
+    # mirrors the host's v6 connectivity (GUA/ULA/link-local) into the netns, an
+    # entire address family the IPv4 routing allowlist does not cover — a lateral-
+    # movement path around the v4 blackholes. The DNS forwarder JAIL_DNS_FWD is
+    # IPv4 (192.0.2.53), so --dns-forward is unaffected.
     # --dns-forward makes pasta listen on JAIL_DNS_FWD inside the netns and
     # relay DNS to the host's real resolvers (issue #60). Harmless when Claude
     # keeps the host resolv.conf (routable resolvers present) — nothing queries
     # the forwarder; load-bearing only on stub-resolver hosts, where the launch
     # path repoints Claude's resolv.conf at JAIL_DNS_FWD.
-    if ! pasta --config-net --dns-forward "$JAIL_DNS_FWD" --quiet --log-file /tmp/claude-pasta.log "$holder" 2>>/tmp/claude-pasta.log; then
+    if ! pasta --config-net --ipv4-only --dns-forward "$JAIL_DNS_FWD" --quiet --log-file /tmp/claude-pasta.log "$holder" 2>>/tmp/claude-pasta.log; then
         jail_fail "— pasta failed to attach to the netns (see /tmp/claude-pasta.log)" "$holder"
     fi
     : > "$CLAUDE_JAIL_READY"

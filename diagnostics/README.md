@@ -15,7 +15,7 @@ container.
 | Script | What it proves |
 |---|---|
 | `probe-network-layers.sh` | Splits the failure modes: the tun-**independent** core (unprivileged netns + in-netns routing) vs. the tun-**dependent** pasta forwarder. Start here to localise a setup failure. |
-| `probe-network-jail.sh` | Full surgical-routing policy end-to-end: RFC1918 + connected subnet blackholed; gateway, DNS, and allow-ip devices reachable; routes immutable from inside the jail. |
+| `probe-network-jail.sh` | Full surgical-routing policy end-to-end: IPv4-only netns (no IPv6 address family); RFC1918, CGNAT (100.64/10), and every connected subnet blackholed; gateway, DNS, and allow-ip devices reachable; routes immutable from inside the jail. |
 | `probe-network-jail-caps.sh` | Cap-ceiling diligence: confirms the full `CapBnd` (present because the jail nests a userns) cannot be re-raised to weaken the read-only mounts. |
 
 These complement — they do not replace — the in-sandbox integrity battery
