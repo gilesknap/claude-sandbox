@@ -12,6 +12,19 @@ and closed if it is ever launched unwrapped.
 
 📖 **Documentation: <https://gilesknap.github.io/claude-sandbox/>**
 
+## Why Use Claude Sandbox
+
+Agents are vulnerable to prompt injection embedded in the text they process (web pages, commit messages etc). This can allow a bad actor to take control of your agent. Agents can also make mistakes.
+
+The blast radius for badly behaved agents can be very large when they are running as a user whose credentials are within their reach. All your credentials are often available to an agent running under your account on your workstation.
+
+For this reason Claude code will default to asking for user approval for every tool call it is going to make. But in real use this leads to 'approval fatigue' where users stop checking what the agent is about to do. 'auto-mode' is a partial fix for this as a second agent acts as a classifier for all tool calls and approves those that don't look dangerous. Unfortunately auto-mode has been demonstrated to be defeated by careful prompt injection.
+
+Hence, Anthropic recommend running Claude Code in an isolated environment where it does not have access to your credentials and you carefully control what network devices and filesystem folders it does have access to. claude-sandbox allows you to have that control inside a developer container running locally on your workstation.
+
+This report demonstrates that the sandbox is secure: https://gist.github.com/gilesknap/582a289874e65b89fc99f09df37cf121.
+
+
 ## Install
 
 Inside any Debian/Ubuntu devcontainer (running as `root`, the typical
