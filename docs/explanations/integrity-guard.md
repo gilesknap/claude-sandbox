@@ -152,6 +152,13 @@ the core "wrapped" proof rather than an opt-out.
 
 Why this is *not* fixed in the same PR, and what's needed:
 
+> **Provisional — unverified.** Both options below hinge on Claude Code's
+> env-var precedence (does managed `env` outrank a real process-environment
+> variable? can a user-scope `env` override the bwrap process env at all?).
+> That is **not yet verified on a live host**, so treat the managed-layer
+> pin as a *candidate* fix, not a resolved one, until the empirical check
+> below is done.
+
 - **The safe pin is the managed layer.** `/etc/claude-code/managed-settings.json`
   is the highest-precedence settings tier and is root-owned (a confined
   Claude cannot write it). Pinning `CLAUDE_CODE_REMOTE` there to a known
