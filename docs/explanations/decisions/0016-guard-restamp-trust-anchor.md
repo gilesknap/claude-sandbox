@@ -27,7 +27,7 @@ intact.
 The gap is **cross-session, at install time**. `install.sh` derives every
 managed artifact from `$SCRIPT_DIR`:
 
-```
+```bash
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # install.sh:25
 ...
 install_file "$SCRIPT_DIR/sandbox-verify.sh" ...             # :316

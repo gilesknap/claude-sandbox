@@ -77,8 +77,8 @@ shadow (`IS_SANDBOX=1`). To allow working **unwrapped**, the operator
 creates a root-owned flag file:
 
 ```console
-$ sudo touch /etc/claude-code/allow-unwrapped   # downgrade gate to warn-only
-$ sudo rm   /etc/claude-code/allow-unwrapped    # restore fail-closed
+sudo touch /etc/claude-code/allow-unwrapped   # downgrade gate to warn-only
+sudo rm   /etc/claude-code/allow-unwrapped    # restore fail-closed
 ```
 
 or runs `ALLOW_UNWRAPPED=1 ./install` (a later `./install` without that
