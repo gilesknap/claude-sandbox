@@ -22,7 +22,7 @@ Debian/Ubuntu devcontainer running as `root` — this page gets you there.
 claude-sandbox supports **rootless** containers only. We recommend
 [Podman](https://podman.io/), which is rootless by default;
 [rootless Docker](https://docs.docker.com/engine/security/rootless/) works
-too. Rootful Docker is **not** supported.
+too. Rootful containers are **not** supported.
 
 Rootless is what makes running as `root` safe. Inside the container you are
 `root` and can install packages or change the system freely — but to your
@@ -54,8 +54,8 @@ That's enough to run claude-sandbox: a Debian/Ubuntu base, `remoteUser: root`
 so the installer can write its system files, the
 [egress jail](../how-to/network-egress-jail.md)'s required `runArg`, and a
 `workspaceMount` that puts your sibling projects alongside this one under
-`/workspaces`. Add a `postCreateCommand` to run claude-sandbox's `install`,
-and a bind mount to [persist your Claude login across
+`/workspaces`. Add a `postCreateCommand`
+and a bind mount to [persist your Claude login and settings across
 rebuilds](../how-to/persist-login-and-memory.md); every other key is in the
 [`devcontainer.json`
 reference](https://containers.dev/implementors/json_reference/).
