@@ -277,7 +277,7 @@ if command -v pasta >/dev/null 2>&1 && [ -e /dev/net/tun ]; then
         ip link set lo up
         for _ in $(seq 1 200); do [ -f "$READY" ] && break; sleep 0.05; done
         {
-            echo "V6GLOBAL:$(ip -6 addr show scope global 2>/dev/null | awk "/inet6/{print \$2}" | tr "\n" " ")"
+            echo "V6ROUTABLE:$(ip -6 addr show 2>/dev/null | awk "/inet6/{print \$2}" | grep -vE "^(::1/|fe80:)" | tr "\n" " ")"
             echo "DEFAULT:$(ip route show default 2>/dev/null | head -n1)"
         } > "$OUT"
     ' &
@@ -289,9 +289,11 @@ if command -v pasta >/dev/null 2>&1 && [ -e /dev/net/tun ]; then
         : > "$READY"
         wait "$HOLDER" || true
         l3="$(cat "$L3_OUT" 2>/dev/null || true)"
-        # No global IPv6 address ⇒ no v6 address family to pivot through.
-        if printf '%s\n' "$l3" | grep -q '^V6GLOBAL: *$'; then pass
-        else fail "leg3 — netns has a global IPv6 address (pasta --ipv4-only breach): $l3"; fi
+        # No ROUTABLE IPv6 (global 2000::/3 or ULA fc00::/7, both scope-global
+        # in Linux) ⇒ no v6 lateral path. ::1 loopback and fe80 link-local
+        # (non-routable, kernel-auto-assigned) are expected and excluded.
+        if printf '%s\n' "$l3" | grep -q '^V6ROUTABLE: *$'; then pass
+        else fail "leg3 — netns has a routable IPv6 address (pasta --ipv4-only breach): $l3"; fi
         # Default route exists after pasta --config-net.
         if printf '%s\n' "$l3" | grep -q '^DEFAULT:default '; then pass
         else fail "leg3 — no default route after pasta --config-net: $l3"; fi
