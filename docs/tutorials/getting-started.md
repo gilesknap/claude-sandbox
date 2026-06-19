@@ -2,8 +2,9 @@
 
 This tutorial gets you to a working, sandboxed Claude Code — and proves the
 sandbox is intact before you trust it. You'll be working inside a
-Debian/Ubuntu devcontainer running as `root` (the typical rootless-Podman
-pattern; rootless Docker works too).
+Debian/Ubuntu [devcontainer](set-up-a-devcontainer.md) running as `root`
+(the typical rootless-Podman pattern; rootless Docker works too). New to
+devcontainers? [Set one up first](set-up-a-devcontainer.md).
 
 There are two ways in. Pick whichever fits how you already work.
 
