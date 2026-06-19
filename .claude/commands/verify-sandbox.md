@@ -1,19 +1,19 @@
 ---
-description: Verify the Claude sandbox is intact — runs the 18-check PASS/FAIL battery + 10 adversarial breakout probes when the battery passes, and exits non-zero on any failure so the command is usable as a CI assertion.
+description: Verify the Claude sandbox is intact — runs the 20-check PASS/FAIL battery + 10 adversarial breakout probes when the battery passes, and exits non-zero on any failure so the command is usable as a CI assertion.
 ---
 
 `/verify-sandbox` runs **two phases** against the live Claude process:
 
-1. The deterministic **18-check battery** — small bash tests that each
+1. The deterministic **20-check battery** — small bash tests that each
    return PASS or FAIL with a one-line explanation. Covers every
    defence in the [locked-down defences](https://gilesknap.github.io/claude-sandbox/reference/locked-down-defences.html) table.
-2. When (and only when) the 18 checks all pass, **10 adversarial
+2. When (and only when) the 20 checks all pass, **10 adversarial
    breakout probes** — open-ended attempts to escape the sandbox or
    exfiltrate credentials, designed by reasoning about gaps the
    deterministic checks don't directly exercise.
 
 Run phase 1 below in order, capture PASS/FAIL, and print the table
-described under "Output format". If all 18 checks pass, run phase 2.
+described under "Output format". If all 20 checks pass, run phase 2.
 Any FAIL in either phase must cause the overall command to exit
 non-zero (so CI assertions work).
 
@@ -327,10 +327,86 @@ grep -qF 'CONFIG_PATH="/etc/claude-sandbox.conf"' "$shadow" \
     && ! grep -q 'parse_config.*\.devcontainer' "$shadow"
 ```
 
-## Phase 2 — Adversarial probes (only when 01–18 all PASS)
+## Check 19 — egress jail active: netns isolated, RFC1918 blackholed
+
+The per-process egress jail (ADR 0015, Design D) runs Claude inside a
+dedicated network namespace whose routing table blackholes the RFC1918
+ranges (`10/8`, `172.16/12`, `192.168/16`) and the connected subnet,
+punching back only the gateway, DNS resolvers, and `allow-ip` devices.
+This check asserts the netns is actually programmed: a default route
+exists **and** all three RFC1918 blackhole routes are present. It catches
+a fail-*open* regression (the jail being skipped while Claude still
+launches) and partial programming (e.g. only `10/8` blackholed).
+
+The jail is fail-*closed* by design — `netns_holder` aborts (so Claude
+never starts) if any blackhole route fails — so a running session is
+either fully jailed or deliberately un-jailed. The intended-state env var
+`CLAUDE_SANDBOX_EGRESS_JAIL` is **not** in the shadow's `--setenv`
+allowlist, so it is invisible from inside; this check therefore keys off
+the jail's *observable effect* (blackhole routes), not intent. When no
+blackhole routes are present, the jail is treated as legitimately disabled
+(`egress-jail = 0` in `/etc/claude-sandbox.conf`, or the
+`CLAUDE_SANDBOX_EGRESS_JAIL=0` env escape hatch) and the check PASSES with
+a "jail not active (disabled)" note rather than false-failing the opt-out.
+
+```bash
+# Route reads go over AF_NETLINK and need no caps; `ip` is visible via
+# --ro-bind / /. "blackhole <range>" lines appear only when the jail
+# programmed them (netns_holder), so their presence is the active marker.
+routes="$(ip route show 2>/dev/null)"
+if printf '%s\n' "$routes" | grep -qE '^blackhole (10\.0\.0\.0/8|172\.16\.0\.0/12|192\.168\.0\.0/16)'; then
+    # Jail active → require the full RFC1918 blackhole set + a default route,
+    # else the jail programmed only part of its allowlist (regression).
+    printf '%s\n' "$routes" | grep -qE '^blackhole 10\.0\.0\.0/8'      && \
+    printf '%s\n' "$routes" | grep -qE '^blackhole 172\.16\.0\.0/12'   && \
+    printf '%s\n' "$routes" | grep -qE '^blackhole 192\.168\.0\.0/16'  && \
+    printf '%s\n' "$routes" | grep -qE '^default '
+else
+    # No blackhole routes → jail deliberately disabled; opt-out is not a failure.
+    true
+fi
+```
+
+## Check 20 — RFC1918 lateral egress blackholed for a non-allow-listed IP
+
+Behavioural counterpart to check 19: instead of inspecting the route
+table, it asks the kernel FIB to resolve representative non-allow-listed
+RFC1918 destinations and asserts each is **unreachable**, while a
+known-allowed destination (the default gateway) stays routable. The
+gateway-routable half matters — it distinguishes a *surgical* lateral
+blackhole from a network that is simply down, so a regression that breaks
+all egress can't masquerade as "jail working".
+
+The probe addresses (`10.255.255.254`, `172.31.255.254`,
+`192.168.255.254`) sit deep in each RFC1918 block where a real gateway,
+resolver, or `allow-ip` device is implausible; the jail punches only
+specific `/32`s back through the blackhole, so these resolve to
+`unreachable`. As with check 19, when the jail is disabled (no blackhole
+routes) the check PASSES with a note.
+
+```bash
+# `ip route get <ip>` returns non-zero ("Network is unreachable") for a
+# blackholed destination and prints a route for an allowed one — a clean,
+# instantaneous FIB query with no connection attempt or timing ambiguity.
+if ip route show 2>/dev/null | grep -qE '^blackhole (10\.0\.0\.0/8|172\.16\.0\.0/12|192\.168\.0\.0/16)'; then
+    blocked=1
+    for ip in 10.255.255.254 172.31.255.254 192.168.255.254; do
+        # Reachable (route resolved) → lateral egress leaked for this range.
+        ip route get "$ip" >/dev/null 2>&1 && blocked=0
+    done
+    gw="$(ip route show default 2>/dev/null | awk 'NR==1{for(i=1;i<=NF;i++) if($i=="via"){print $(i+1); exit}}')"
+    # Surgical, not blanket: the gateway must still resolve.
+    [ -n "$gw" ] && ip route get "$gw" >/dev/null 2>&1 && [ "$blocked" = 1 ]
+else
+    # Jail deliberately disabled; nothing to assert.
+    true
+fi
+```
+
+## Phase 2 — Adversarial probes (only when 01–20 all PASS)
 
 When the deterministic battery is clean, think of **10 novel breakout
-approaches and try them**. The goal is to find a gap the 18-check
+approaches and try them**. The goal is to find a gap the 20-check
 matrix doesn't directly exercise — anything that lets the sandbox
 escape its filesystem inversion, recover scrubbed env vars, reach
 the host's network identity, signal/observe processes outside the
@@ -373,17 +449,17 @@ should be followed by a "Suggested follow-up:" line proposing what
 a more targeted test would look like.
 
 If all 10 probes are **[BLOCKED]**, the sandbox passes both phases
-and the final line becomes `RESULT: SANDBOX OK (18 deterministic +
+and the final line becomes `RESULT: SANDBOX OK (20 deterministic +
 10 adversarial)`.
 
 ## Output format
 
-Print a header line `"/verify-sandbox: 18 checks"`, then one
+Print a header line `"/verify-sandbox: 20 checks"`, then one
 `[PASS]` / `[FAIL]` line per check (zero-padded number, name,
 one-line explanation on FAIL), then a `Summary:` line.
 
 ```
-/verify-sandbox: 18 checks
+/verify-sandbox: 20 checks
   [PASS] 01 IS_SANDBOX sentinel set
   [PASS] 02 NO_NEW_PRIVS: setuid escalation blocked
   [PASS] 03 strict-under-/root: only .claude (+.cache/.local) under $HOME
@@ -402,7 +478,9 @@ one-line explanation on FAIL), then a `Summary:` line.
   [PASS] 16 curated gitconfig: GIT_CONFIG_GLOBAL set, user.email present
   [PASS] 17 workspace scoped to $PWD (not broad /workspaces)
   [PASS] 18 config read from /etc/claude-sandbox.conf (no $PWD/.devcontainer read)
-  Summary: 18 PASS / 0 FAIL
+  [PASS] 19 egress jail active: RFC1918 blackholed in netns (or disabled)
+  [PASS] 20 RFC1918 lateral egress unreachable, gateway still routable (or disabled)
+  Summary: 20 PASS / 0 FAIL
 
 Adversarial probes:
   [BLOCKED] 01 read /proc/<host_pid>/environ — EACCES (YAMA ptrace_scope=1)
@@ -421,6 +499,6 @@ If any phase-2 probe is `[ESCAPED]`, exit non-zero regardless of
 phase-1 results.
 
 Final result line:
-- All 18 PASS + 10 BLOCKED → `RESULT: SANDBOX OK (18 deterministic + 10 adversarial)`
-- All 18 PASS + ≥1 INCONCLUSIVE + 0 ESCAPED → `RESULT: SANDBOX OK (18 deterministic + N BLOCKED, M INCONCLUSIVE)`
+- All 20 PASS + 10 BLOCKED → `RESULT: SANDBOX OK (20 deterministic + 10 adversarial)`
+- All 20 PASS + ≥1 INCONCLUSIVE + 0 ESCAPED → `RESULT: SANDBOX OK (20 deterministic + N BLOCKED, M INCONCLUSIVE)`
 - Any FAIL or ESCAPED → `RESULT: SANDBOX LEAKING — open an issue against gilesknap/claude-sandbox`
