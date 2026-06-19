@@ -20,3 +20,4 @@
 build/
 docs/_build/
 .venv-docs/
+.claude/workflows
