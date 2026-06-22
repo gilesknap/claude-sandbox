@@ -5,6 +5,8 @@
 # Claude local-only settings (per-user, not committed)
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
+# Workflow scripts are local tooling (e.g. deep-review.js), not shipped sandbox
+.claude/workflows/
 
 # git worktrees — never commit a worktree checkout. These live inside the repo
 # (rather than a sibling dir) because the sandbox makes only $PWD writable.

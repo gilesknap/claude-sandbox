@@ -20,6 +20,15 @@
 #   STATUS=1                         force-overwrite the user-scope
 #                                    statusline script from the clone's
 #                                    copy, instead of seed-only-if-absent.
+#   ALLOW_UNWRAPPED=1                stamp the ROOT-OWNED gate escape-hatch
+#                                    flag (/etc/claude-code/allow-unwrapped)
+#                                    so the UserPromptSubmit gate downgrades
+#                                    to warn-only. The OPERATOR's switch for
+#                                    running claude unwrapped; a confined
+#                                    Claude can't create it (it's under /etc,
+#                                    ro in the sandbox — deep-review H4).
+#                                    Unset/0 leaves the gate fail-closed and
+#                                    removes a stale flag.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -30,6 +39,7 @@ WORKSPACE="${INSTALL_WORKSPACE:-$PWD}"
 USER_HOME="${INSTALL_USER_HOME:-$HOME}"
 SMOKE="${CLAUDE_SANDBOX_SMOKE:-0}"
 FORCE_STATUSLINE="${STATUS:-0}"
+ALLOW_UNWRAPPED="${ALLOW_UNWRAPPED:-0}"
 
 # Resolve a target under $PREFIX. Stripping the leading slash lets us
 # compose relative-to-prefix paths cleanly without a `//` between root
@@ -304,17 +314,53 @@ link_terminal_config() {
 GUARD_LIBEXEC="/usr/libexec/claude-sandbox"
 VERIFY_PATH="$GUARD_LIBEXEC/sandbox-verify.sh"
 GATE_PATH="$GUARD_LIBEXEC/sandbox-gate.sh"
+# The /verify-sandbox phase-1 battery lives next to the guard scripts —
+# off-PATH, root-owned, ro inside the sandbox — so a compromised in-session
+# Claude (the workspace is rw) cannot rewrite the verifier to print PASS for
+# a broken sandbox. It is NOT a hook (not wired into managed-settings); the
+# /verify-sandbox command runs it by absolute path for the live battery.
+BATTERY_PATH="$GUARD_LIBEXEC/verify-sandbox-battery.sh"
 VERIFY_CMD="bash $VERIFY_PATH"
 GATE_CMD="bash $GATE_PATH"
 MANAGED_SETTINGS="/etc/claude-code/managed-settings.json"
+# Root-owned escape-hatch flag the gate checks (keep in sync with
+# sandbox-gate.sh's hard-coded ALLOW_UNWRAPPED_FLAG). Under /etc — ro inside
+# the sandbox, not host-shared — so only root (or a deliberate ./install) can
+# create it; a confined Claude cannot (H4).
+GATE_FLAG_PATH="/etc/claude-code/allow-unwrapped"
 USER_SL_CMD='bash $HOME/.claude/statusline-command.sh'
 
 # install_guard_scripts: place the guard scripts off the user's PATH and
 # off the sandbox rw set (same neighbourhood as the relocated real
-# binary). Root-owned, ro inside the sandbox.
+# binary). Root-owned, ro inside the sandbox. The /verify-sandbox phase-1
+# battery rides along for the same tamper-resistance (it's not a hook,
+# just an off-PATH script the command invokes by absolute path).
 install_guard_scripts() {
-    install_file "$SCRIPT_DIR/sandbox-verify.sh" "$(prefixed "$VERIFY_PATH")"
-    install_file "$SCRIPT_DIR/sandbox-gate.sh"   "$(prefixed "$GATE_PATH")"
+    install_file "$SCRIPT_DIR/sandbox-verify.sh"          "$(prefixed "$VERIFY_PATH")"
+    install_file "$SCRIPT_DIR/sandbox-gate.sh"            "$(prefixed "$GATE_PATH")"
+    install_file "$SCRIPT_DIR/verify-sandbox-battery.sh"  "$(prefixed "$BATTERY_PATH")"
+}
+
+# wire_gate_flag: stamp (ALLOW_UNWRAPPED=1) or remove the ROOT-OWNED gate
+# escape-hatch flag the UserPromptSubmit gate checks. The flag REPLACES the
+# old CLAUDE_SANDBOX_ALLOW_UNWRAPPED env hatch, which a confined Claude could
+# forge by writing ~/.claude/settings.json's "env" block (deep-review H4).
+# Living under /etc — root-owned, ro inside the sandbox, NOT host-shared —
+# the flag can only be created by the operator (or a deliberate ./install),
+# never from inside the jail. State is fully driven by ALLOW_UNWRAPPED so a
+# re-install with it unset removes a previously-stamped flag (fail-closed
+# default restored). Mode 0644 — it's a presence marker; only existence
+# matters.
+wire_gate_flag() {
+    local flag; flag="$(prefixed "$GATE_FLAG_PATH")"
+    if [ "$ALLOW_UNWRAPPED" = "1" ]; then
+        mkdir -p "$(dirname "$flag")"
+        : > "$flag"
+        chmod 0644 "$flag"
+        echo "claude-sandbox: WARNING — gate escape hatch ENABLED ($flag); the UserPromptSubmit gate is warn-only, unwrapped claude is permitted. Re-run install with ALLOW_UNWRAPPED unset to restore fail-closed." >&2
+    else
+        rm -f "$flag"
+    fi
 }
 
 # wire_managed_settings: idempotent jq merge of the guard into the
@@ -445,6 +491,7 @@ main() {
     # off any earlier user-scope guard).
     install_guard_scripts
     wire_managed_settings
+    wire_gate_flag
     wire_user_statusline
 
     echo "claude-sandbox: install complete."
@@ -452,7 +499,9 @@ main() {
     echo "  real claude: $(prefixed /usr/libexec/claude-sandbox/claude)"
     echo "  config:      $(prefixed /etc/claude-sandbox.conf)"
     echo "  guard:       $(prefixed "$VERIFY_PATH"), $(prefixed "$GATE_PATH") (off-PATH, ro in sandbox)"
+    echo "  battery:     $(prefixed "$BATTERY_PATH") (off-PATH, ro in sandbox; /verify-sandbox phase 1)"
     echo "  managed:     $(prefixed "$MANAGED_SETTINGS") (SessionStart + UserPromptSubmit + DISABLE_AUTOUPDATER)"
+    echo "  gate hatch:  $(prefixed "$GATE_FLAG_PATH") $([ "$ALLOW_UNWRAPPED" = "1" ] && echo 'PRESENT — gate warn-only (unwrapped permitted)' || echo 'absent — gate fail-closed')"
     echo "  statusline:  $USER_HOME/.claude/settings.json (preference only)"
     echo "  workspace:   $WORKSPACE"
     echo "  run \`/verify-sandbox\` inside Claude for the live battery."

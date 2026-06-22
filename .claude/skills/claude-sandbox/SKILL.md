@@ -1,6 +1,6 @@
 ---
 name: claude-sandbox
-description: Architecture decisions and historical reversals for this repo's bwrap-based Claude sandbox. Covers real claude off PATH, container-scoped PATs, the GLOBAL integrity guard delivered via managed-settings (/etc + /usr/libexec, NOT user-scope ~/.claude): SessionStart verify + UserPromptSubmit gate, plus auto-updater disable, Ubuntu-24.04 CI bwrap workarounds, dogfood ≈ guest, the `just promote` three-layer model (no JSONC editing), and two walked-back paths (Python orchestration; embedding in python-copier-template). Surface before edits to `.devcontainer/claude-sandbox/{claude-shadow,install.sh,promote.sh,sandbox-verify.sh,sandbox-gate.sh}`, `install`, `tests/`, `.github/workflows/ci.yml`, or `.claude/commands/verify-sandbox.md`; or before any suggestion to re-introduce Python tooling, embed in python-copier-template, persist gh/glab PATs across containers, auto-edit JSONC devcontainer.json, move the integrity guard out of managed-settings (to per-repo `.claude/` or user-scope `~/.claude`), or re-enable the in-container auto-updater.
+description: Architecture decisions and historical reversals for this repo's bwrap-based Claude sandbox. Covers real claude off PATH, container-scoped PATs, the GLOBAL integrity guard delivered via managed-settings (/etc + /usr/libexec, NOT user-scope ~/.claude): SessionStart verify + UserPromptSubmit gate, plus auto-updater disable, Ubuntu-24.04 CI bwrap workarounds, dogfood ≈ guest, the `just promote` three-layer model (no JSONC editing), and two walked-back paths (Python orchestration; embedding in python-copier-template). Surface before edits to `.devcontainer/claude-sandbox/{claude-shadow,install.sh,promote.sh,sandbox-verify.sh,sandbox-gate.sh,verify-sandbox-battery.sh}`, `install`, `tests/`, `.github/workflows/ci.yml`, or `.claude/commands/verify-sandbox.md`; or before any suggestion to re-introduce Python tooling, embed in python-copier-template, persist gh/glab PATs across containers, auto-edit JSONC devcontainer.json, move the integrity guard out of managed-settings (to per-repo `.claude/` or user-scope `~/.claude`), or re-enable the in-container auto-updater.
 ---
 
 # claude-sandbox
@@ -8,7 +8,22 @@ description: Architecture decisions and historical reversals for this repo's bwr
 Project-specific architecture decisions. The code documents *what*;
 this skill documents *why* and *what regressions to refuse*. Threat
 model: [threat model](https://gilesknap.github.io/claude-sandbox/explanations/threat-model.html); live verification: `/verify-sandbox`
-(`.claude/commands/verify-sandbox.md`).
+(the command markdown `.claude/commands/verify-sandbox.md` documents the
+*why* of each check; the phase-1 PASS/FAIL battery is the committed
+script `.devcontainer/claude-sandbox/verify-sandbox-battery.sh`, run by
+absolute path from `/usr/libexec/claude-sandbox`).
+
+**Why the 20-check battery is a committed script, not inline in the
+command markdown** (refuse a "simplify it back inline" request): slash
+commands substitute `$1`…`$9` as positional args, so the awk field refs
+the checks need were silently blanked when injected from the .md —
+07/10/17/20 false-failed on awk syntax errors before any shell ran. A
+file on disk dodges that, the shebang pins bash (no zsh `nomatch` glob
+abort), and `/usr/libexec` placement makes it ro inside the sandbox so a
+compromised session can't rewrite the verifier to print PASS. install.sh
+places it via `install_guard_scripts`; promote ships it; smoke + promote
+tests assert placement/mode and that it runs-to-format-and-exits-nonzero
+outside a sandbox.
 
 ## Invariant 1 — plain `claude` MUST resolve to the shadow
 
@@ -312,8 +327,19 @@ their own `~/.claude/settings.json`. Two hooks, wired by
   (SessionStart only injects messages/context — exit 2 does *not* abort).
 - `UserPromptSubmit` → `/usr/libexec/claude-sandbox/sandbox-gate.sh`:
   lean fail-closed gate, `exit 2` (blocks the prompt) unless
-  `IS_SANDBOX=1`. Escape hatch: `CLAUDE_SANDBOX_ALLOW_UNWRAPPED=1`. Both
-  skip on `CLAUDE_CODE_REMOTE=true`.
+  `IS_SANDBOX=1`. Escape hatch: the ROOT-OWNED flag
+  `/etc/claude-code/allow-unwrapped` (stamped by `install.sh` when
+  `ALLOW_UNWRAPPED=1`, or `sudo touch`). It is a flag under `/etc`, NOT an
+  env var, because a confined Claude can write `~/.claude/settings.json`
+  (host-shared) and Claude Code exports its `env` block into later
+  sessions — so the old `CLAUDE_SANDBOX_ALLOW_UNWRAPPED=1` env hatch was
+  forgeable from inside the jail and persistently neutralised the gate on
+  a later unwrapped launch (deep-review H4). `/etc` is ro in the sandbox
+  and not host-shared. Both hooks skip on `CLAUDE_CODE_REMOTE=true`.
+  **Refuse as a regression:** re-introducing an env-var escape hatch for
+  the gate (or any gate-bypass signal a sandbox-rw / host-shared path can
+  set) — it reopens H4. The gate test in `tests/smoke.sh` asserts the
+  retired env var no longer bypasses.
 
 **Why managed-settings + `/usr/libexec`, not user-scope `~/.claude`**
 (this is the tamper-resistance that makes the native devcontainer
@@ -377,7 +403,8 @@ this.
 | End-to-end install smoke test | `tests/smoke.sh`                                    |
 | Promote smoke test            | `tests/promote.sh`                                  |
 | CI workflow                   | `.github/workflows/ci.yml`                          |
-| Live verification spec        | `.claude/commands/verify-sandbox.md`                |
+| Live verification spec (why)  | `.claude/commands/verify-sandbox.md`                |
+| Phase-1 battery script (what) | `.devcontainer/claude-sandbox/verify-sandbox-battery.sh` |
 | Global SessionStart verifier  | `.devcontainer/claude-sandbox/sandbox-verify.sh`    |
 | Global UserPromptSubmit gate  | `.devcontainer/claude-sandbox/sandbox-gate.sh`      |
 | Threat model + binds rationale| [sphinx docs](https://gilesknap.github.io/claude-sandbox/explanations/threat-model.html) |

@@ -78,10 +78,12 @@ fi
 expect_byte_equal "$REPO_ROOT/.devcontainer/claude-sandbox/install.sh"        "$TARGET/.devcontainer/claude-sandbox/install.sh"
 expect_byte_equal "$REPO_ROOT/.devcontainer/claude-sandbox/claude-shadow"     "$TARGET/.devcontainer/claude-sandbox/claude-shadow"
 expect_byte_equal "$REPO_ROOT/.devcontainer/claude-sandbox/promote.sh"        "$TARGET/.devcontainer/claude-sandbox/promote.sh"
-# Global guard scripts must ship so the target's postCreate install.sh
-# (which places them under ~/.claude) can find them.
-expect_byte_equal "$REPO_ROOT/.devcontainer/claude-sandbox/sandbox-verify.sh" "$TARGET/.devcontainer/claude-sandbox/sandbox-verify.sh"
-expect_byte_equal "$REPO_ROOT/.devcontainer/claude-sandbox/sandbox-gate.sh"   "$TARGET/.devcontainer/claude-sandbox/sandbox-gate.sh"
+# Global guard scripts + the /verify-sandbox phase-1 battery must ship so
+# the target's postCreate install.sh (which places them under
+# /usr/libexec) can find them.
+expect_byte_equal "$REPO_ROOT/.devcontainer/claude-sandbox/sandbox-verify.sh"         "$TARGET/.devcontainer/claude-sandbox/sandbox-verify.sh"
+expect_byte_equal "$REPO_ROOT/.devcontainer/claude-sandbox/sandbox-gate.sh"           "$TARGET/.devcontainer/claude-sandbox/sandbox-gate.sh"
+expect_byte_equal "$REPO_ROOT/.devcontainer/claude-sandbox/verify-sandbox-battery.sh" "$TARGET/.devcontainer/claude-sandbox/verify-sandbox-battery.sh"
 expect_byte_equal "$REPO_ROOT/justfile"                                   "$TARGET/justfile"
 # Config file — should land in target on first promote.
 expect_file "$TARGET/.devcontainer/claude-sandbox.conf"
@@ -133,12 +135,13 @@ CLAUDE_SANDBOX_SMOKE=1 INSTALL_USER_HOME="$PROMOTED_HOME" INSTALL_PREFIX="$PROMO
     bash "$TARGET/.devcontainer/claude-sandbox/install.sh" >/dev/null 2>&1
 if [ -x "$PROMOTED_PREFIX/usr/libexec/claude-sandbox/sandbox-verify.sh" ] \
         && [ -x "$PROMOTED_PREFIX/usr/libexec/claude-sandbox/sandbox-gate.sh" ] \
+        && [ -x "$PROMOTED_PREFIX/usr/libexec/claude-sandbox/verify-sandbox-battery.sh" ] \
         && jq -e 'any(.hooks.UserPromptSubmit[].hooks[]?; (.command // "")|endswith("sandbox-gate.sh"))
                   and (.env.DISABLE_AUTOUPDATER == "1")' \
             "$PROMOTED_PREFIX/etc/claude-code/managed-settings.json" >/dev/null 2>&1; then
     pass
 else
-    fail "promoted target's install.sh did not wire the managed guard from shipped scripts"
+    fail "promoted target's install.sh did not wire the managed guard + battery from shipped scripts"
 fi
 
 # Idempotency: re-run must be byte-stable across the whole target.

@@ -113,19 +113,33 @@ plan or decision landed means you skipped the gate.
 
 ### 4. Apply serially — one explicit go per commit
 
-The commit is a hard gate. Present and commit in **two separate turns**:
+**The hard gate is the *commit* (stage + `git commit`), not the file write.** A
+commit landing without the user speaking between the diff and the commit means
+you broke the gate — *even if the fix was right*. Present and commit in **two
+separate turns**:
 
-- **Turn A — present, then STOP.** For *this item only*: the proposed diff (or
-  file list for a deletion), one line why, the commit message. End the turn — no
-  edit, no `git add`, no commit yet.
-- **Turn B — on an explicit go:** edit, quick-validate where cheap (lint / one
-  relevant test / re-grep — don't claim a fix you didn't check), commit with the
-  project's sign-off trailer, capture the SHA, then present the next item.
+- **Turn A — present, then STOP.** For *this item only*: the proposed change,
+  one line why, and the commit message. Present the diff one of two ways:
+  - **Describe it** — paste the proposed diff in the message, touch nothing on
+    disk. Lightest; fine for small/obvious fixes.
+  - **Working-tree preview** — apply the edit to the working tree *uncommitted
+    and unstaged*, quick-validate (lint / `bash -n` / one relevant test /
+    re-grep), and show the real `git diff`. Use this when the user wants to
+    review the change in their own editor/tooling. State plainly that nothing is
+    staged or committed and that you'll revert on veto. This is the default once
+    the user has asked to review changes on disk.
 
-A go covers one item; re-present each. On **veto**: drop it (→ `deferred`) and
-don't touch later items while waiting. A commit landing without the user speaking
-between diff and commit means you broke the gate — *even if the fix was right*.
-Only an unprompted, explicit "do them all" lifts the per-item stop.
+  Either way: **no `git add`, no `git commit`** — end the turn.
+- **Turn B — on an explicit go:** apply the edit if you only described it,
+  (re-)validate where cheap — don't claim a fix you didn't check — then stage
+  *only this item's files* (never `git add -A`; leave unrelated untracked files
+  alone) and commit with the project's sign-off trailer, capture the SHA, and
+  present the next item.
+
+A go covers one item; re-present each. On **veto**: if you applied a working-tree
+preview, revert it (`git restore <file>` / `git checkout -- <file>`) so a vetoed
+item leaves no trace; mark it `deferred` and don't touch later items while
+waiting. Only an unprompted, explicit "do them all" lifts the per-item stop.
 
 ### 5. Reply and resolve each thread
 

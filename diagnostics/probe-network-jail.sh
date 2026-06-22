@@ -8,11 +8,14 @@
 # blackhole) leaves the whole local /20 reachable.
 #
 # v2 policy (validated here before patching claude-shadow):
-#   - blackhole RFC1918 (10/8, 172.16/12, 192.168/16) + the connected subnet
+#   - IPv4-only netns: pasta attaches with --ipv4-only, so there is NO IPv6
+#     address family in the netns (no GUA/ULA/link-local v6 lateral path)
+#   - blackhole RFC1918 (10/8, 172.16/12, 192.168/16), CGNAT (100.64/10), and
+#     EVERY connected subnet (not just the first scope-link route)
 #   - punch back ONLY: gateway (/32 on-link), DNS resolvers from resolv.conf
 #     (/32 via gw), and allow-ip devices (/32 via gw)
-# => internet + DNS work; lateral movement to internal hosts (incl. same-subnet)
-#    is blocked except the allow-listed devices.
+# => internet + DNS work; lateral movement to internal hosts (incl. same-subnet,
+#    CGNAT/Tailscale, and IPv6) is blocked except the allow-listed devices.
 #
 # Stub-resolver DNS (issue #60): when /etc/resolv.conf names ONLY loopback
 # resolvers (systemd-resolved 127.0.0.53, Tailscale MagicDNS) they're
@@ -88,12 +91,30 @@ if [ -n "${JAIL_SUBNET:-}" ]; then
     echo "FAIL  SECURITY: same-subnet host $tl reachable: $r"
   fi
 fi
+# CGNAT (100.64/10, Tailscale et al.) must be blackholed.
+cg=$(rget 100.127.255.254 || true)
+if [ -z "$cg" ] || printf '%s' "$cg" | grep -qE 'blackhole|unreachable|prohibit'; then
+  echo "PASS  CGNAT host 100.127.255.254 is blackholed"
+else
+  echo "FAIL  SECURITY: CGNAT host 100.127.255.254 reachable: $cg"
+fi
+# IPv4-only netns (--ipv4-only): no IPv6 address family at all.
+v6addr=$(ip -6 addr show scope global 2>/dev/null | awk '/inet6/{print $2}')
+if [ -z "$v6addr" ]; then
+  echo "PASS  no global IPv6 address in the netns (IPv4-only)"
+else
+  echo "FAIL  SECURITY: netns has a global IPv6 address: $v6addr"
+fi
 
 echo "  --- connectivity ---"
 nh=${NAME%:*}; np=${NAME##*:}
 conn "$nh" "$np" 10 && echo "PASS  DNS+egress: $NAME reachable (name resolved + connected)" || echo "FAIL  DNS+egress: $NAME unreachable"
 conn 1.1.1.1 443    && echo "PASS  internet by IP (1.1.1.1:443)"                              || echo "FAIL  internet by IP unreachable"
 conn 10.255.255.254 9 3 && echo "FAIL  RFC1918 LEAK (10/8)"                                  || echo "PASS  RFC1918 (10/8) blocked"
+conn 100.127.255.254 9 3 && echo "FAIL  CGNAT LEAK (100.64/10)"                              || echo "PASS  CGNAT (100.64/10) blocked"
+# IPv6 must be entirely absent (--ipv4-only). A v6 connect can't even start
+# without a v6 source address, so this is unreachable by construction.
+conn 2606:4700:4700::1111 443 3 && echo "FAIL  SECURITY: IPv6 egress reachable (2606:4700:4700::1111)" || echo "PASS  IPv6 egress unreachable (IPv4-only netns)"
 if [ -n "${DEV:-}" ]; then
   dh=${DEV%:*}; dp=${DEV##*:}; [ "$dh" = "$dp" ] && dp=443
   conn "$dh" "$dp" && echo "PASS  device $dh:$dp reachable via allow-ip" || echo "WARN  device $dh:$dp unreachable"
@@ -121,16 +142,21 @@ dev=$(awk '{for(i=1;i<NF;i++)if($i=="dev")print $(i+1)}' <<<"$def")
 if [ -z "$gw" ] || [ -z "$dev" ]; then
   echo "  [holder] no default via/dev (pasta gave: ${def:-none})"; ip route show; exit 4
 fi
-subnet=$(ip -o route show dev "$dev" scope link 2>/dev/null | awk 'NR==1{print $1}')
+# ALL connected subnets, not just the first (each is more-specific than the
+# blackholes, so any left un-blackholed stays reachable).
+mapfile -t subnets < <(ip -o route show dev "$dev" scope link 2>/dev/null | awk '{print $1}')
 mapfile -t dns < <(awk '/^[[:space:]]*nameserver/{print $2}' /etc/resolv.conf 2>/dev/null)
-echo "  [holder] gw=$gw dev=$dev subnet=${subnet:-none} dns=${dns[*]:-none}"
+echo "  [holder] gw=$gw dev=$dev subnets=${subnets[*]:-none} dns=${dns[*]:-none}"
 
 # Gateway on-link first, then blackhole everything internal, then re-punch.
 ip route replace "$gw/32" dev "$dev"
-[ -n "$subnet" ] && ip route replace blackhole "$subnet"
+for subnet in "${subnets[@]:-}"; do
+  [ -n "$subnet" ] && ip route replace blackhole "$subnet"
+done
 ip route replace blackhole   10.0.0.0/8
 ip route replace blackhole   172.16.0.0/12
 ip route replace blackhole   192.168.0.0/16
+ip route replace blackhole   100.64.0.0/10
 ip route replace unreachable 169.254.0.0/16
 ip route replace default via "$gw" dev "$dev"
 for ns in "${dns[@]:-}"; do
@@ -158,7 +184,7 @@ HOLDER=$!
 for _ in $(seq 1 200); do [ -e "/proc/$HOLDER/ns/net" ] && break; sleep 0.05; done
 [ -e "/proc/$HOLDER/ns/net" ] || { echo "FAIL  holder netns never appeared"; exit 5; }
 
-if pasta --config-net --dns-forward "$JAIL_DNS_FWD" "$HOLDER" 2>"$PASTA_ERR"; then
+if pasta --config-net --ipv4-only --dns-forward "$JAIL_DNS_FWD" "$HOLDER" 2>"$PASTA_ERR"; then
   echo "  [probe] pasta attached to holder netns (pid $HOLDER)"
 else
   echo "  [probe] pasta attach FAILED:"; sed 's/^/    /' "$PASTA_ERR"

@@ -170,11 +170,13 @@ copy_tree "$REPO_ROOT/.claude/skills"   "$TARGET/.claude/skills"
 install_file "$SCRIPT_DIR/install.sh"       "$TARGET/.devcontainer/claude-sandbox/install.sh"
 install_file "$SCRIPT_DIR/claude-shadow"    "$TARGET/.devcontainer/claude-sandbox/claude-shadow"
 install_file "$SCRIPT_DIR/promote.sh"       "$TARGET/.devcontainer/claude-sandbox/promote.sh"
-# The global guard scripts install.sh places under ~/.claude. Ship them
-# so a promoted target's postCreate `install.sh` can find them (it reads
-# them from its own .devcontainer/claude-sandbox/, not from a clone).
-install_file "$SCRIPT_DIR/sandbox-verify.sh" "$TARGET/.devcontainer/claude-sandbox/sandbox-verify.sh"
-install_file "$SCRIPT_DIR/sandbox-gate.sh"   "$TARGET/.devcontainer/claude-sandbox/sandbox-gate.sh"
+# The global guard scripts + the /verify-sandbox phase-1 battery that
+# install.sh places under /usr/libexec. Ship them so a promoted target's
+# postCreate `install.sh` can find them (it reads them from its own
+# .devcontainer/claude-sandbox/, not from a clone).
+install_file "$SCRIPT_DIR/sandbox-verify.sh"          "$TARGET/.devcontainer/claude-sandbox/sandbox-verify.sh"
+install_file "$SCRIPT_DIR/sandbox-gate.sh"            "$TARGET/.devcontainer/claude-sandbox/sandbox-gate.sh"
+install_file "$SCRIPT_DIR/verify-sandbox-battery.sh"  "$TARGET/.devcontainer/claude-sandbox/verify-sandbox-battery.sh"
 
 # Root justfile — the recipes shipped here (promote, gh-auth,
 # glab-auth) are workflow tools a promoted host needs too. Recipes

@@ -66,25 +66,43 @@ Channel Access broadcast are untouched. Only the shadow's launch is jailed:
   for — bwrap then aborts on `/proc/<pid>` lookups. A user+net-only holder keeps
   `/proc` valid so bwrap nests cleanly.)
 - `pasta` **attaches from outside** the holder by PID (`pasta --config-net
-  <holder-pid>`; it backgrounds itself). The egress proxy *must* run outside the
-  netns — it needs host connectivity to proxy. No container caps, no host-firewall
-  change. Note `--config-net` **mirrors the host's L3 config** into the netns: the
-  host address, the **connected-subnet route**, the default gateway, and the DNS
-  resolvers from `/etc/resolv.conf`.
+  --ipv4-only <holder-pid>`; it backgrounds itself). The egress proxy *must* run
+  outside the netns — it needs host connectivity to proxy. No container caps, no
+  host-firewall change. Note `--config-net` **mirrors the host's L3 config** into
+  the netns: the host address, the **connected-subnet route(s)**, the default
+  gateway, and the DNS resolvers from `/etc/resolv.conf`. `--ipv4-only` is
+  load-bearing: without it pasta also mirrors the host's **IPv6** connectivity
+  (GUA / ULA / link-local) into the netns — an entire address family the IPv4
+  routing allowlist does not cover, i.e. a v6 lateral-movement path around every
+  v4 blackhole. The jail is therefore **IPv4-only by design**: the netns has no
+  IPv6 address at all, so there is nothing to blackhole or punch on the v6 side.
+  (The DNS forwarder address `192.0.2.53` is IPv4, so `--dns-forward` is
+  unaffected.)
 - **Routing-as-allowlist (surgical)** inside the holder's netns. A *blanket*
   RFC1918 blackhole is wrong: on sites where the resolvers and gateway are
   themselves RFC1918 (e.g. an all-`172.23/16` lab network) it kills DNS, and
   pasta's mirrored connected-subnet route is *more specific* than the blackhole,
   so the whole local subnet stays reachable. Instead the holder: `blackhole`
-  `10/8`, `172.16/12`, `192.168/16` **and the connected subnet**, `unreachable`
+  `10/8`, `172.16/12`, `192.168/16`, the **CGNAT** range `100.64/10` (Tailscale
+  and other carrier-grade-NAT internal addresses), **and every connected subnet**
+  (pasta mirrors a connected route for *each* on-link subnet, and each is more
+  specific than the blackholes, so any one left un-blackholed stays fully
+  reachable — the holder enumerates them all, not just the first), `unreachable`
   `169.254/16`; then punches back only — the **gateway** (`/32`, on-link), the
   **DNS resolvers** (`/32` via gw; resolution is not lateral movement, since
   connections to internal IPs stay blackholed), and the **`allow-ip` devices**
-  (`/32` via gw) from `/etc/claude-sandbox.conf`. The holder locks these down
-  **before** handing off to bwrap — ordering (netns created → pasta attached →
-  routes locked → *then* Claude runs) is load-bearing for the boundary. The
-  blackholes are fail-closed (a failed one aborts the launch); the device/DNS
-  punches are fail-soft (a missing one is lost reachability, not an open hole).
+  (`/32` via gw) from `/etc/claude-sandbox.conf`. The `/32` gateway/DNS/allow-ip
+  re-punches are *more specific* than the `/8`–`/10` blackholes, so longest-prefix
+  match keeps them reachable while the surrounding range stays blocked. The holder
+  locks these down **before** handing off to bwrap — ordering (netns created →
+  pasta attached → routes locked → *then* Claude runs) is load-bearing for the
+  boundary. The blackholes are **genuinely fail-closed**: the holder runs in a
+  fresh `bash -c`, which the file-level `set -euo pipefail` does *not* reach, so
+  the holder re-establishes `set -euo pipefail` as its first statement *and* each
+  load-bearing route step is `|| jail_fail`-guarded — a failed blackhole aborts
+  the launch so Claude never starts with an internal range reachable. The
+  device/DNS punches are fail-soft (a missing one is lost reachability, not an
+  open hole).
 - **Stub-resolver DNS via a pasta forwarder.** Punching `/32`s for the
   `/etc/resolv.conf` resolvers only works when those resolvers are *routable*.
   On a personal Ubuntu desktop the sole resolver is a **loopback stub**

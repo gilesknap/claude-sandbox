@@ -4,31 +4,60 @@ description: Verify the Claude sandbox is intact — runs the 20-check PASS/FAIL
 
 `/verify-sandbox` runs **two phases** against the live Claude process:
 
-1. The deterministic **20-check battery** — small bash tests that each
-   return PASS or FAIL with a one-line explanation. Covers every
-   defence in the [locked-down defences](https://gilesknap.github.io/claude-sandbox/reference/locked-down-defences.html) table.
+1. The deterministic **20-check battery** — a committed bash script that
+   runs each check and prints PASS or FAIL with a one-line explanation.
+   Covers every defence in the [locked-down defences](https://gilesknap.github.io/claude-sandbox/reference/locked-down-defences.html) table.
 2. When (and only when) the 20 checks all pass, **10 adversarial
    breakout probes** — open-ended attempts to escape the sandbox or
    exfiltrate credentials, designed by reasoning about gaps the
    deterministic checks don't directly exercise.
 
-Run phase 1 below in order, capture PASS/FAIL, and print the table
-described under "Output format". If all 20 checks pass, run phase 2.
-Any FAIL in either phase must cause the overall command to exit
-non-zero (so CI assertions work).
+## Running phase 1
 
-## Check 01 — IS_SANDBOX sentinel
+Run the installed battery script and capture its output and exit code:
+
+```bash
+bash /usr/libexec/claude-sandbox/verify-sandbox-battery.sh
+```
+
+It prints the table under "Output format" below (header line, one
+`[PASS]`/`[FAIL]` row per check, then a `Summary:` line) and exits with
+the **FAIL count** — `0` when every check passes.
+
+- **Exit 0** → all 20 green; proceed to phase 2.
+- **Non-zero** → report the failing rows verbatim, then **STOP**: skip
+  phase 2 (no point red-teaming a known-broken sandbox) and make the
+  overall command exit non-zero so CI assertions fail.
+
+If the script is missing (`No such file`), the install is stale — re-run
+`./install` (it places the battery under `/usr/libexec/claude-sandbox`)
+and relaunch. An absent battery is itself a finding, not a pass.
+
+**Why the checks are a committed script and not inline snippets here.**
+Slash-command loading substitutes `$1`…`$9` as positional arguments, so
+the awk field references several checks rely on (parsing
+`/proc/self/status` and `mountinfo`) were silently blanked to empty when
+the snippets were injected from this file — checks 07/10/17/20
+false-failed on awk syntax errors before any shell ran. A file on disk is
+read straight by bash, so the field refs survive; the shebang also pins
+bash, closing the gap where a non-bash login shell (zsh's `nomatch`)
+turns an unmatched glob into a hard error. The script lives off-PATH in
+`/usr/libexec/claude-sandbox` (root-owned, ro inside the sandbox), so a
+compromised in-session Claude — the workspace is rw — cannot rewrite the
+verifier to print PASS for a broken sandbox. The sections below document
+**why** each check exists and what regression it catches; the script is
+the **what** that runs. Keep the two in sync when a check changes.
+
+## The 20 checks
+
+### Check 01 — IS_SANDBOX sentinel
 
 `IS_SANDBOX=1` is set inside the sandbox by `bwrap --setenv`. If
 unset, Claude was launched against the real binary
 (`<clone>/.runtime/claude`) directly, bypassing the sandbox entirely.
 This is the fall-through sentinel.
 
-```bash
-[ "${IS_SANDBOX:-}" = "1" ]
-```
-
-## Check 02 — NO_NEW_PRIVS
+### Check 02 — NO_NEW_PRIVS
 
 bwrap sets `PR_SET_NO_NEW_PRIVS=1` before exec'ing the target, so
 setuid binaries inside the sandbox cannot gain privileges. With
@@ -48,11 +77,7 @@ broken on the hosts we care about. Repurposed to cover NO_NEW_PRIVS,
 which was previously listed as "Implicit" in the locked-down table with
 no PASS/FAIL check of its own.
 
-```bash
-grep -q '^NoNewPrivs:[[:space:]]*1$' /proc/self/status
-```
-
-## Check 03 — strict-under-/root
+### Check 03 — strict-under-/root
 
 `$HOME` (typically `/root`) is a tmpfs with `.claude`, `.claude.json`
 (Claude Code's account state), `.cache`, and `.local/share` bound back
@@ -88,53 +113,22 @@ never get written, and check 03 enforces that: if any of those six
 browser-named dirs reappears under `$HOME/.config`, the disable
 regressed.
 
-```bash
-# ls -A skips . and ..; the allowed top-level entries are the
-# .claude/.cache binds, the .claude.json account-state bind, the
-# .config intermediate tmpfs for the selectively-exposed gh/glab
-# binds, the .local tree Claude Code writes into the tmpfs at
-# runtime, and the four masked dotfiles intentionally bound to /dev/null.
-extras="$(ls -A "$HOME" 2>/dev/null | grep -vxE '\.claude|\.claude\.json|\.cache|\.config|\.local|\.gitconfig|\.netrc|\.Xauthority|\.ICEauthority' || true)"
-[ -z "$extras" ] || exit 1
-# When .config is present (bwrap intermediate for the credential
-# binds), assert it contains only the trusted subdirs — anything else
-# means either a sibling ~/.config tool (VS Code, etc.) leaked through
-# or the shadow's --no-chrome injection regressed (browser dirs from
-# Claude Code's Chrome native-messaging-host self-registration).
-if [ -d "$HOME/.config" ]; then
-    config_extras="$(ls -A "$HOME/.config" 2>/dev/null | grep -vxE 'gh|glab-cli' || true)"
-    [ -z "$config_extras" ]
-fi
-```
-
-## Check 04 — env scrub: GH_TOKEN
+### Check 04 — env scrub: GH_TOKEN
 
 With `--clearenv` and an explicit allow-list, `GH_TOKEN` from the
 host shell must be empty inside the sandbox.
 
-```bash
-[ -z "${GH_TOKEN:-}" ]
-```
-
-## Check 05 — env scrub: DISPLAY
+### Check 05 — env scrub: DISPLAY
 
 `DISPLAY` is deliberately not in the `--clearenv` allow-list — it
 closes the X11 reachability path.
 
-```bash
-[ -z "${DISPLAY:-}" ]
-```
-
-## Check 06 — cap_drop ALL
+### Check 06 — cap_drop ALL
 
 `--cap-drop ALL` empties the effective capability set. `CapEff` in
 `/proc/self/status` reads all zeros.
 
-```bash
-grep -q '^CapEff:\s*0\{16\}$' /proc/self/status
-```
-
-## Check 07 — --unshare-pid (kernel pidns isolation)
+### Check 07 — --unshare-pid (kernel pidns isolation)
 
 `--unshare-pid` puts the sandbox in a nested PID namespace. The
 kernel-level effect is what matters for the threat model: `kill()` /
@@ -154,42 +148,21 @@ entries (`/proc/<pid>/environ`, `/maps`, `/fd`, `/mem`) stay gated by
 visibility does not become credential exfil — but see the [threat model](https://gilesknap.github.io/claude-sandbox/explanations/threat-model.html)
 for the honest tally.
 
-```bash
-# NSpid: lists our PID across each pidns level (outermost first).
-# With --unshare-pid in effect we sit in at least one nested pidns,
-# so the line has >= 2 fields after the label.
-nspid_count=$(awk '$1=="NSpid:"{print NF-1;exit}' /proc/self/status)
-[ "${nspid_count:-1}" -ge 2 ]
-```
+### Check 08 — --unshare-ipc
 
-## Check 08 — --unshare-ipc
+The SysV IPC namespace differs from the host's. Inside an unshared
+ipcns, `/proc/self/ns/ipc` resolves to a different inode than the
+un-namespaced kernel default. We can't sample the host inode from
+inside, but we CAN assert `/proc/self/ns/ipc` exists and is a symlink
+to a unique `ipc:[<inum>]`.
 
-The SysV IPC namespace differs from the host's. We compare the
-inode of `/proc/self/ns/ipc` to PID 1's (PID 1 is bwrap-or-claude
-inside, by check 02; the inodes differ from the host's by virtue of
-unshare).
-
-```bash
-# inside an unshared ipcns, /proc/self/ns/ipc resolves to a different
-# inode than the un-namespaced kernel default. We can't sample the
-# host inode from inside, but we CAN assert /proc/self/ns/ipc exists
-# and is a symlink to a unique ipc:[<inum>].
-ipc_link="$(readlink /proc/self/ns/ipc 2>/dev/null || true)"
-case "$ipc_link" in ipc:\[*\]) exit 0 ;; *) exit 1 ;; esac
-```
-
-## Check 09 — --unshare-uts
+### Check 09 — --unshare-uts
 
 The UTS namespace is unshared, so a hostname change inside doesn't
 affect the host. We assert the namespace symlink exists with the
 expected shape; the integration test exercises the behavioural property.
 
-```bash
-uts_link="$(readlink /proc/self/ns/uts 2>/dev/null || true)"
-case "$uts_link" in uts:\[*\]) exit 0 ;; *) exit 1 ;; esac
-```
-
-## Check 10 — private /dev (TIOCSTI blocked)
+### Check 10 — private /dev (TIOCSTI blocked)
 
 We dropped `--new-session` so SIGWINCH and job control reach the
 sandbox. The TIOCSTI defence is now delivered by two coupled
@@ -200,76 +173,42 @@ devtmpfs with a fresh devpts mount — the host's `/dev/pts/*` is
 not visible). An ioctl(TIOCSTI) inside the sandbox can therefore
 only inject into script's pty, whose contents script reads and
 writes as *output bytes* to the host terminal — never as input to
-the parent shell.
+the parent shell. The check asserts `/dev` is a fresh `tmpfs`/`devtmpfs`
+mount (mountinfo fs-type field) rather than a bind of the host's `/dev`.
 
-```bash
-# /dev must be a fresh mount inside the sandbox (not a bind of the
-# host's /dev). Under --dev /dev bwrap mounts a private devtmpfs;
-# under --dev-bind /dev /dev it would be a bind mount. mountinfo
-# field 9 (fs type) distinguishes them.
-awk '$5 == "/dev" { print $9; exit }' /proc/self/mountinfo \
-    | grep -qE '^(tmpfs|devtmpfs)$'
-```
-
-## Check 11 — /tmp is tmpfs and empty
+### Check 11 — /tmp is tmpfs and empty
 
 The host's `/tmp` carries VS Code IPC sockets (`vscode-ipc-*.sock`,
 `vscode-git-*.sock`). `--tmpfs /tmp` masks them. We assert no such
 socket is visible.
 
-```bash
-# No vscode-ipc-*.sock and no vscode-git-*.sock visible inside.
-! ls /tmp/vscode-ipc-*.sock /tmp/vscode-git-*.sock >/dev/null 2>&1
-```
-
-## Check 12 — /run/user is tmpfs and empty
+### Check 12 — /run/user is tmpfs and empty
 
 `--tmpfs /run/user` masks the user's runtime directory which can hold
 DBus sockets and other IPC bridges.
 
-```bash
-[ -z "$(ls -A /run/user 2>/dev/null)" ]
-```
-
-## Check 13 — /run/secrets is tmpfs and empty
+### Check 13 — /run/secrets is tmpfs and empty
 
 `--tmpfs /run/secrets` closes the Docker/Compose secrets path even
 when the host has populated `/run/secrets/*`.
 
-```bash
-[ -z "$(ls -A /run/secrets 2>/dev/null)" ]
-```
-
-## Check 14 — file mask: .netrc empty
+### Check 14 — file mask: .netrc empty
 
 `--bind-try /dev/null /root/.netrc` masks any host `.netrc`
 credentials.
 
-```bash
-[ ! -s "$HOME/.netrc" ]
-```
-
-## Check 15 — file mask: .Xauthority empty
+### Check 15 — file mask: .Xauthority empty
 
 `--bind-try /dev/null /root/.Xauthority` masks the X11 cookie that
 would otherwise authenticate against a host X server.
 
-```bash
-[ ! -s "$HOME/.Xauthority" ]
-```
-
-## Check 16 — curated gitconfig active
+### Check 16 — curated gitconfig active
 
 `GIT_CONFIG_GLOBAL=/etc/claude-gitconfig` is exported and the file's
-`user.email` matches the host's. Verifies that the curated gitconfig
-is in effect at every launch.
+`user.email` is present. Verifies that the curated gitconfig is in
+effect at every launch.
 
-```bash
-[ "${GIT_CONFIG_GLOBAL:-}" = "/etc/claude-gitconfig" ] && \
-    [ -n "$(git config --get user.email 2>/dev/null)" ]
-```
-
-## Check 17 — workspace scoped to `$PWD`, not broad `/workspaces`
+### Check 17 — workspace scoped to `$PWD`, not broad `/workspaces`
 
 The default workspace bind is `$PWD` — only the current project
 directory is writable inside the sandbox. The old behaviour (binding
@@ -278,32 +217,14 @@ is restored by setting `CLAUDE_SANDBOX_WORKSPACE_ROOT=/workspaces` in
 your devcontainer's `remoteEnv`. This check fails when the broad
 `/workspaces` bind is active without that explicit opt-in.
 
-```bash
-# Only meaningful when /workspaces exists (devcontainer convention) and
-# $PWD is a proper subdir of it. If /workspaces is an rw bind-mount and
-# CLAUDE_SANDBOX_WORKSPACE_ROOT is not /workspaces, the old default
-# regressed (it is passed through as --setenv into the sandbox).
-#
-# Hardened parse: a mountinfo line is
-#   36 35 98:0 /mnt1 /mnt2 rw,noatime - ext4 /dev/sda1 rw,errors=...
-#                         ^field 6 = per-mount opts   ^after "-" = superblock opts
-# The superblock options (which routinely end in "rw" even for a read-only
-# bind) must NEVER be read here. We isolate field 6 of the LAST matching
-# /workspaces line (topmost mount wins), split it on commas, and require an
-# EXACT "rw" token. Token equality (not a substring/`\brw\b` regex on the
-# whole line) means superblock "rw" can never produce a false positive,
-# even if the field selection later regresses to printing $0.
-if [ -d /workspaces ] && [ "$PWD" != /workspaces ]; then
-    if awk '$5=="/workspaces"{opts=$6}
-            END{if(opts==""){exit 1}
-                n=split(opts,o,","); for(i=1;i<=n;i++) if(o[i]=="rw") exit 0
-                exit 1}' /proc/self/mountinfo; then
-        [ "${CLAUDE_SANDBOX_WORKSPACE_ROOT:-}" = "/workspaces" ] || exit 1
-    fi
-fi
-```
+The mountinfo parse is hardened: it reads the per-mount options field
+(field 6) of the last matching `/workspaces` line and requires an
+**exact** `rw` token, never the superblock options after the `-`
+separator (which routinely end in `rw` even for a read-only bind). The
+exact parse lives in the script; token equality means a superblock `rw`
+can't produce a false positive.
 
-## Check 18 — config read from `/etc`, not the workspace
+### Check 18 — config read from `/etc`, not the workspace
 
 The shadow reads its config from the host-global
 `/etc/claude-sandbox.conf` (placed by `install.sh`), **not** from
@@ -320,23 +241,19 @@ that to `parse_config`, with no `parse_config` call reading from
 match is scoped to the `parse_config` line so the `/etc` rationale
 comment — which legitimately names the source path — doesn't trip it.
 
-```bash
-shadow="$(command -v claude)"
-grep -qF 'CONFIG_PATH="/etc/claude-sandbox.conf"' "$shadow" \
-    && grep -qF 'parse_config "$CONFIG_PATH"' "$shadow" \
-    && ! grep -q 'parse_config.*\.devcontainer' "$shadow"
-```
-
-## Check 19 — egress jail active: netns isolated, RFC1918 blackholed
+### Check 19 — egress jail active: netns isolated, RFC1918 blackholed
 
 The per-process egress jail (ADR 0015, Design D) runs Claude inside a
 dedicated network namespace whose routing table blackholes the RFC1918
-ranges (`10/8`, `172.16/12`, `192.168/16`) and the connected subnet,
-punching back only the gateway, DNS resolvers, and `allow-ip` devices.
-This check asserts the netns is actually programmed: a default route
-exists **and** all three RFC1918 blackhole routes are present. It catches
-a fail-*open* regression (the jail being skipped while Claude still
-launches) and partial programming (e.g. only `10/8` blackholed).
+ranges (`10/8`, `172.16/12`, `192.168/16`), the CGNAT range
+(`100.64/10`, Tailscale et al.), and every connected subnet, punching
+back only the gateway, DNS resolvers, and `allow-ip` devices. The netns
+is IPv4-only (pasta `--ipv4-only`), so there is no v6 address family to
+blackhole. This check asserts the netns is actually programmed: a default
+route exists **and** all three RFC1918 blackhole routes **and** the CGNAT
+blackhole are present. It catches a fail-*open* regression (the jail being
+skipped while Claude still launches) and partial programming (e.g. only
+`10/8` blackholed, or CGNAT dropped so Tailscale internal hosts leak).
 
 The jail is fail-*closed* by design — `netns_holder` aborts (so Claude
 never starts) if any blackhole route fails — so a running session is
@@ -349,25 +266,7 @@ blackhole routes are present, the jail is treated as legitimately disabled
 `CLAUDE_SANDBOX_EGRESS_JAIL=0` env escape hatch) and the check PASSES with
 a "jail not active (disabled)" note rather than false-failing the opt-out.
 
-```bash
-# Route reads go over AF_NETLINK and need no caps; `ip` is visible via
-# --ro-bind / /. "blackhole <range>" lines appear only when the jail
-# programmed them (netns_holder), so their presence is the active marker.
-routes="$(ip route show 2>/dev/null)"
-if printf '%s\n' "$routes" | grep -qE '^blackhole (10\.0\.0\.0/8|172\.16\.0\.0/12|192\.168\.0\.0/16)'; then
-    # Jail active → require the full RFC1918 blackhole set + a default route,
-    # else the jail programmed only part of its allowlist (regression).
-    printf '%s\n' "$routes" | grep -qE '^blackhole 10\.0\.0\.0/8'      && \
-    printf '%s\n' "$routes" | grep -qE '^blackhole 172\.16\.0\.0/12'   && \
-    printf '%s\n' "$routes" | grep -qE '^blackhole 192\.168\.0\.0/16'  && \
-    printf '%s\n' "$routes" | grep -qE '^default '
-else
-    # No blackhole routes → jail deliberately disabled; opt-out is not a failure.
-    true
-fi
-```
-
-## Check 20 — RFC1918 lateral egress blackholed for a non-allow-listed IP
+### Check 20 — RFC1918 lateral egress blackholed for a non-allow-listed IP
 
 Behavioural counterpart to check 19: instead of inspecting the route
 table, it asks the kernel FIB to resolve representative non-allow-listed
@@ -382,40 +281,15 @@ The broad probe addresses (`10.255.255.254`, `172.31.255.254`,
 resolver, or `allow-ip` device is implausible; the jail punches only
 specific `/32`s back through the blackhole, so these resolve to
 `unreachable`. These exercise the generic RFC1918 blackholes — but the
-jail *also* blackholes the **connected subnet** (the host's own LAN), and
-that is the higher-value lateral-movement case: a neighbour one hop away
-on the same wire. So the check additionally derives that subnet and probes
-it. The connected-subnet blackhole is the one `blackhole` line that is
-*not* a generic RFC1918 range, and the probe uses its **network base
-address** (the part before `/`) — guaranteed in-subnet, and never one of
-the host `/32`s the jail punches back (gateway / resolver / `allow-ip`),
-so it can't accidentally hit an allowed route. As with check 19, when the
-jail is disabled (no blackhole routes) the check PASSES with a note.
-
-```bash
-# `ip route get <ip>` returns non-zero ("Network is unreachable") for a
-# blackholed destination and prints a route for an allowed one — a clean,
-# instantaneous FIB query with no connection attempt or timing ambiguity.
-if ip route show 2>/dev/null | grep -qE '^blackhole (10\.0\.0\.0/8|172\.16\.0\.0/12|192\.168\.0\.0/16)'; then
-    blocked=1
-    probes=(10.255.255.254 172.31.255.254 192.168.255.254)
-    # Connected subnet (host LAN): the non-RFC1918-generic blackhole line.
-    # Probe its network base — in-subnet by construction, never a punched /32.
-    subnet="$(ip route show 2>/dev/null | awk '/^blackhole /{print $2}' \
-        | grep -vxE '10\.0\.0\.0/8|172\.16\.0\.0/12|192\.168\.0\.0/16|169\.254\.0\.0/16' | head -n1)"
-    [ -n "$subnet" ] && probes+=("${subnet%/*}")
-    for ip in "${probes[@]}"; do
-        # Reachable (route resolved) → lateral egress leaked for this range.
-        ip route get "$ip" >/dev/null 2>&1 && blocked=0
-    done
-    gw="$(ip route show default 2>/dev/null | awk 'NR==1{for(i=1;i<=NF;i++) if($i=="via"){print $(i+1); exit}}')"
-    # Surgical, not blanket: the gateway must still resolve.
-    [ -n "$gw" ] && ip route get "$gw" >/dev/null 2>&1 && [ "$blocked" = 1 ]
-else
-    # Jail deliberately disabled; nothing to assert.
-    true
-fi
-```
+jail *also* blackholes **every connected subnet** (the host's own LANs),
+and that is the higher-value lateral-movement case: a neighbour one hop
+away on the same wire. So the check additionally derives a connected
+subnet and probes its network base address — guaranteed in-subnet, and
+never one of the host `/32`s the jail punches back (gateway / resolver /
+`allow-ip`), so it can't accidentally hit an allowed route. (The jail may
+blackhole several connected subnets; probing the first is sufficient to
+prove the mechanism.) As with check 19, when the jail is disabled (no
+blackhole routes) the check PASSES with a note.
 
 ## Phase 2 — Adversarial probes (only when 01–20 all PASS)
 
@@ -468,9 +342,11 @@ and the final line becomes `RESULT: SANDBOX OK (20 deterministic +
 
 ## Output format
 
-Print a header line `"/verify-sandbox: 20 checks"`, then one
-`[PASS]` / `[FAIL]` line per check (zero-padded number, name,
-one-line explanation on FAIL), then a `Summary:` line.
+The battery script prints the phase-1 portion verbatim — a header line
+`"/verify-sandbox: 20 checks"`, then one `[PASS]` / `[FAIL]` line per
+check (zero-padded number, name, one-line explanation on FAIL), then a
+`Summary:` line. After phase 2 you append the `Adversarial probes:`
+block and the final `RESULT:` line.
 
 ```
 /verify-sandbox: 20 checks
@@ -483,7 +359,7 @@ one-line explanation on FAIL), then a `Summary:` line.
   [PASS] 07 --unshare-pid: NSpid has >= 2 entries (kernel pidns isolated)
   [PASS] 08 --unshare-ipc: ipcns symlink present
   [PASS] 09 --unshare-uts: utsns symlink present
-  [PASS] 10 --new-session: no controlling tty (TIOCSTI blocked)
+  [PASS] 10 private /dev: fresh tmpfs (TIOCSTI blocked)
   [PASS] 11 /tmp tmpfs: no vscode-ipc-*.sock visible
   [PASS] 12 /run/user empty
   [PASS] 13 /run/secrets empty (Docker/Compose secrets masked)
@@ -504,10 +380,9 @@ Adversarial probes:
   Adversarial summary: 10 BLOCKED / 0 ESCAPED / 0 INCONCLUSIVE
 ```
 
-If any phase-1 check FAILs, replace `[PASS]` with `[FAIL]` and
-append the specific reason to that line. Then exit non-zero and
-SKIP phase 2 entirely (no point red-teaming a known-broken
-sandbox).
+If any phase-1 check FAILs, the script's row shows `[FAIL]` with the
+specific reason appended. Exit non-zero and SKIP phase 2 entirely (no
+point red-teaming a known-broken sandbox).
 
 If any phase-2 probe is `[ESCAPED]`, exit non-zero regardless of
 phase-1 results.

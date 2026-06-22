@@ -27,7 +27,10 @@ sandbox**):
 - `SessionStart → sandbox-verify.sh`: advisory full integrity battery, warns
   loudly when unwrapped (SessionStart cannot block).
 - `UserPromptSubmit → sandbox-gate.sh`: fail-closed, `exit 2` unless
-  `IS_SANDBOX=1`. Escape hatch `CLAUDE_SANDBOX_ALLOW_UNWRAPPED=1`; both skip on
+  `IS_SANDBOX=1`. Escape hatch is the root-owned flag
+  `/etc/claude-code/allow-unwrapped` (a flag under `/etc`, not an env var,
+  so a confined Claude can't forge it via `~/.claude/settings.json`'s
+  exported `env` block — deep-review H4); both skip on
   `CLAUDE_CODE_REMOTE=true`.
 
 This is the same "security inputs live outside the rw workspace" discipline as
