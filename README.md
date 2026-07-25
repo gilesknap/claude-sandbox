@@ -1,6 +1,12 @@
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
 [![Docs](https://img.shields.io/badge/docs-online-blue.svg)](https://gilesknap.github.io/claude-sandbox/)
 
+> **Active development has moved.** The project's primary home is now the Diamond
+> Light Source fork: **[DiamondLightSource/claude-sandbox](https://github.com/DiamondLightSource/claude-sandbox)**.
+> That repo has the latest features, documentation, and the published container
+> image. This repository is the original home and may lag behind — for the current
+> version, head there.
+
 # claude-sandbox
 
 bwrap-isolated Claude Code for Debian/Ubuntu devcontainers (rootless Podman is
