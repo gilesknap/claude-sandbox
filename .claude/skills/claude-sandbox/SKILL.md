@@ -413,6 +413,50 @@ linking enforce-org-wide from the DLS pages), and shortening the
 Style note for `docs/dls/` pages: no em dashes — rewrite with colons,
 parentheses, or semicolons (owner preference).
 
+## `install` picks a RELEASE by default — `--here` installs the checkout
+
+`install` (the root shim, not `install.sh`) resolves **which revision** to
+install before exec'ing `install.sh`:
+
+| invocation | installs |
+|---|---|
+| `install` | newest stable release **tag** |
+| `install --here` | this working tree, as checked out |
+| `install --release [REF]` | REF, or newest stable tag; retargets even a pinned/dirty clone |
+
+Why the default is a tag, not the checkout: the documented one-liner clones
+`main` (unreleased work) while `claude-sandbox update` has always installed
+the newest tag — so a first install and every later update disagreed about
+what "current" means. Release selection now lives in `install` only, and
+`cmd_update` delegates to it: **one** implementation of "what is current".
+
+Prereleases are excluded by an explicit filter. A beta sorts *above* the
+release it precedes (`2.1.0-beta.1` > `2.0.0`), so "newest tag" without the
+filter would hand betas to everyone running `update`.
+
+**The refusal is the load-bearing part.** On a pinned (detached / non-default
+branch) or locally-modified clone the default **refuses** instead of
+retargeting. Teams pin a revision and bump it as a reviewed act (ADR 0017);
+a silent bump would defeat the pin on every teammate's next rebuild with
+nothing in the diff to show for it.
+
+**Refuse as regressions:**
+
+- Making the default retarget a pinned or dirty clone "for convenience".
+- Dropping `--here` from `.devcontainer/postCreate.sh` (this repo's own
+  devcontainer — without it a rebuild replaces the branch under test with
+  the last release) or from
+  `docs/how-to/sandbox-a-team-devcontainer.md`.
+- Re-adding tag selection to `cmd_update` (two implementations that drift).
+- Removing the prerelease filter, or the `bash -c` argv trick around the
+  checkout — `git checkout` rewrites `install` while bash is still reading
+  it, so everything after the checkout must live in argv, not in the file.
+- Letting `CLAUDE_SANDBOX_SMOKE=1` retarget: a smoke run must test the
+  checkout it was pointed at.
+
+Coverage: `tests/install_ref.sh` (hermetic — builds its own origin+clone
+with synthetic tags; needs no root or caps).
+
 ## Never `sudo` — we are root inside a rootless container
 
 The devcontainer and the published image run as **root** (`uid 0`,

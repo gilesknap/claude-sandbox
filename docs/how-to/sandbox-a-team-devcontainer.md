@@ -30,8 +30,16 @@ fi
 git -C "$CSBX_DIR" fetch --quiet origin "$CSBX_PIN" || true
 git -C "$CSBX_DIR" checkout --quiet "$CSBX_PIN"
 
-bash "$CSBX_DIR/install"
+bash "$CSBX_DIR/install" --here
 ```
+
+`--here` is what makes the pin authoritative. Run with no flag, `install`
+resolves and installs the **newest release tag** instead — right for a
+one-off clone, wrong here, where you have just checked out the revision
+you intend to run. It will not do that silently: on a clone that is
+pinned, on a non-default branch, or locally modified, the flagless form
+refuses and tells you to pass `--here`. Passing it makes the intent
+explicit and keeps the pin the only thing that decides your version.
 
 The clone lives in the container filesystem, so a rebuild re-creates it at
 the pinned revision; the installer is idempotent, so re-runs are cheap and
@@ -65,7 +73,7 @@ cat > "$CSBX_DIR/.devcontainer/claude-sandbox.conf" <<'EOF'
 # Team defaults — see reference/configuration for all keys.
 allow-ip = 192.168.1.50    # lab device reachable through the jail
 EOF
-bash "$CSBX_DIR/install"
+bash "$CSBX_DIR/install" --here
 ```
 
 :::{admonition} postCreate runs unjailed

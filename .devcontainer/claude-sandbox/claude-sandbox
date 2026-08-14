@@ -104,18 +104,14 @@ cmd_update() {
         echo "claude-sandbox: this is the published container image — update by pulling a newer image and recreating the container (claude-container --recreate)." >&2
         exit 1
     fi
-    local tmp tag
+    local tmp
     tmp="$(mktemp -d)"
     git clone --quiet "$REPO_URL" "$tmp/claude-sandbox"
-    # Latest RELEASE tag. versionsort.suffix=- is required: default git
-    # version-sort ranks 2.2.0-beta.1 ABOVE 2.2.0.
-    tag="$(git -C "$tmp/claude-sandbox" -c versionsort.suffix=- tag --sort=-v:refname | head -1)"
-    if [ -n "$tag" ]; then
-        git -C "$tmp/claude-sandbox" checkout --quiet "$tag"
-        echo "claude-sandbox: updating to release $tag"
-    else
-        echo "claude-sandbox: no release tags found; installing main @ $(git -C "$tmp/claude-sandbox" rev-parse --short HEAD)"
-    fi
+    # Release selection lives in `install` (which defaults to the newest
+    # stable tag) so there is ONE implementation of "what is current" —
+    # shared with a first install from the documented clone one-liner.
+    # This clone is pristine and on the default branch, so the default
+    # applies and no flag is needed.
     # Safe self-replacement: install overwrites the very file bash is
     # reading incrementally. exec into a fresh `bash -c` — the command
     # string lives in argv, not in this file — so nothing reads this

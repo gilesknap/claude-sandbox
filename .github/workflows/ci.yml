@@ -50,6 +50,15 @@ jobs:
           mkdir -p "$HOME/.claude" "$HOME/.cache"
           CLAUDE_SANDBOX_SMOKE=1 bash tests/bwrap_argv.sh
 
+      # Which git ref `install` selects, and when it refuses to select one.
+      # Hermetic — builds its own throwaway origin+clone with synthetic tags,
+      # so it never touches this checkout. `sudo` only to clear the shim's own
+      # `id -u` gate (the runner is not root; a devcontainer is): the stub
+      # installer it execs does nothing. NOT CLAUDE_SANDBOX_SMOKE=1, which
+      # would clear that gate but also force --here, defeating the test.
+      - name: Run install revision-selection tests
+        run: sudo -E bash tests/install_ref.sh
+
       - name: Run install smoke test
         run: |
           export HOME=/tmp/sandbox-home

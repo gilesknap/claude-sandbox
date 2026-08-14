@@ -107,7 +107,10 @@ In a terminal inside the container (`` Ctrl+` `` in VS Code), paste:
 cd /tmp && rm -rf claude-sandbox && git clone https://github.com/DiamondLightSource/claude-sandbox && claude-sandbox/install
 ```
 
-The clone is disposable: nothing depends on it after install.
+The clone is disposable: nothing depends on it after install. You get the
+newest **release** — the installer checks the newest release tag out
+before installing and prints which one — so a fresh install and
+`claude-sandbox update` (step 6) always agree on what "current" means.
 
 ### 5. Run Claude
 
