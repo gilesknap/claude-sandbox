@@ -61,12 +61,13 @@ jobs:
     # which the rest of CI never touches: smoke.sh stays outside the netns and
     # verify-sandbox's jail checks need a live jailed `claude` (manual). The test
     # drives the REAL netns_holder in a throwaway netns and asserts the blackhole
-    # allowlist + fail-closed behaviour. It is CAPABILITY-GATED: if the runner
-    # cannot grant unshare + CAP_NET_ADMIN it SKIPs cleanly (exit 0) and LOGS what
-    # was skipped — so this job never flakes, but the moment a runner (or the
-    # devcontainer) CAN grant the caps, the assertions run for real. Kept a
-    # separate job (not folded into `test`) so a skip here is obvious in the CI
-    # matrix and the job's log makes the skip explicit rather than silent.
+    # allowlist + fail-closed behaviour. The test is CAPABILITY-GATED and skips
+    # cleanly where the caps are absent (a dev box, or an in-jail session where
+    # namespaces cannot nest) — but this job runs it with EGRESS_JAIL_REQUIRE=1,
+    # which turns any skip into a FAILURE. A green check here therefore means the
+    # assertions ran, not merely that nothing exploded. Kept a separate job (not
+    # folded into `test`) so the jail's enforcement coverage is legible on its own
+    # in the CI matrix.
     permissions:
       contents: read
     runs-on: ubuntu-latest
@@ -83,18 +84,27 @@ jobs:
 
       # Ubuntu 24.04 runners ship kernel.apparmor_restrict_unprivileged_userns=1,
       # which blocks the `unshare -rn` the holder needs. Relax it (mirrors the
-      # `test` job's bwrap workaround). If the runner still won't grant the caps,
-      # the test detects that and SKIPs — it never hard-fails on environment.
+      # `test` job's bwrap workaround). `|| true` keeps a runner whose sysctl name
+      # has changed from failing HERE — the next step is where it must surface,
+      # and under EGRESS_JAIL_REQUIRE=1 it will: no caps means a failed job, not
+      # a silent skip. That is deliberate. If this starts failing because GitHub
+      # changed the runner image, fix the workaround — do not relax the require.
       - name: Allow unprivileged userns on Ubuntu 24.04
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
 
       - name: Run egress-jail netns enforcement test
-        run: |
-          # The test self-gates on netns/CAP_NET_ADMIN (and pasta/tun for the
-          # live leg) and prints a clear SKIP line when caps are unavailable on
-          # the runner. Run it verbosely so the skip-vs-ran decision is visible
-          # in the job log (no silent no-op, no pretended coverage).
-          bash tests/egress_jail.sh
+        env:
+          # A skip must FAIL here. The test self-gates on netns/CAP_NET_ADMIN
+          # (and pasta/tun for the live leg), which is right on a dev box or in
+          # an in-jail session where namespaces cannot nest — but in CI a skip
+          # is invisible: the check goes green either way and the only evidence
+          # is a log line nobody reads on a passing run. Since this file is the
+          # jail enforcement's ONLY automated coverage, a runner that quietly
+          # stopped granting the caps would retire every blackhole and
+          # fail-closed assertion with CI still green. EGRESS_JAIL_REQUIRE=1
+          # makes green mean "the assertions actually ran".
+          EGRESS_JAIL_REQUIRE: 1
+        run: bash tests/egress_jail.sh
 
   lint:
     runs-on: ubuntu-latest
