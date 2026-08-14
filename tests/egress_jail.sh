@@ -134,8 +134,9 @@ run_holder() {
             ip addr add "$TADDR" dev jailtest0
             ip route replace default via "$TGW" dev jailtest0
 
-            # resolv.conf the holder reads for DNS punch-back. A routable
-            # resolver so the holder routes a /32 for it (loopback is skipped).
+            # resolv.conf fixture. A routable resolver ON the connected subnet:
+            # the holder must NOT punch a /32 for it (issue #11), so it stays
+            # blackholed with the rest of the subnet.
             printf "nameserver %s\n" "$TDNS" > "$RUNDIR/resolv.conf"
 
             # netns_holder reads /etc/resolv.conf directly; bind our fixture
@@ -200,11 +201,13 @@ else fail "leg1 — connected subnet $JAIL_TEST_SUBNET not blackholed (same-LAN 
 if has "^${JAIL_TEST_GW//./\\.}(/32)? dev jailtest0"; then pass
 else fail "leg1 — gateway $JAIL_TEST_GW not pinned on-link (jail would have no egress)"; fi
 
-# DNS resolver punched back as a /32 via the gateway. This resolver sits ON the
-# connected subnet, so the assertion proves an allowed host stays reachable past
-# the connected-subnet blackhole (the /32 punch outweighs the /24 blackhole).
-if has "^${JAIL_TEST_DNS//./\\.}(/32)? via ${JAIL_TEST_GW//./\\.}"; then pass
-else fail "leg1 — DNS resolver $JAIL_TEST_DNS not punched back via gateway"; fi
+# DNS resolver NOT punched (issue #11). All jail DNS goes via the pasta
+# forwarder, so a resolver named in resolv.conf gets no hole of its own — it
+# stays behind the connected-subnet blackhole like any other internal host.
+# Guards against reinstating a /32 aimed at a real LAN address.
+if has "^${JAIL_TEST_DNS//./\\.}(/32)? via ${JAIL_TEST_GW//./\\.}"; then
+    fail "leg1 — DNS resolver $JAIL_TEST_DNS punched back via gateway (issue #11: resolvers must not get /32 holes)"
+else pass; fi
 
 # allow-ip device punched back as a /32 via the gateway.
 if has "^${JAIL_TEST_ALLOWIP//./\\.}(/32)? via ${JAIL_TEST_GW//./\\.}"; then pass
@@ -303,6 +306,41 @@ if command -v pasta >/dev/null 2>&1 && [ -e /dev/net/tun ]; then
     fi
 else
     echo "SKIP(leg3): pasta and/or /dev/net/tun absent — live IPv6/default-route leg not run (core enforcement above DID run)" >&2
+fi
+
+# ===========================================================================
+# Leg 4 — jail_stage_dns ALWAYS points Claude at the pasta forwarder and keeps
+# the host's search list (issue #11). Needs only a mount namespace: the
+# function reads /etc/resolv.conf and writes a staged file, no networking.
+# ===========================================================================
+if declare -F jail_stage_dns >/dev/null; then
+    L4_OUT="$RUNDIR/leg4.resolv"
+    if unshare -rm env SHADOW="$SHADOW" OUT="$L4_OUT" RUNDIR="$RUNDIR" bash -c '
+            set -uo pipefail
+            # A routable resolver plus a search list and options — the shape of
+            # a real site resolv.conf, which the old code left untouched.
+            printf "search cs.example.ac.uk example.ac.uk\nnameserver 198.51.100.53\noptions timeout:1\n" \
+                > "$RUNDIR/resolv4.conf"
+            mount --bind "$RUNDIR/resolv4.conf" /etc/resolv.conf || exit 1
+            CLAUDE_SHADOW_SOURCE_ONLY=1 . "$SHADOW"
+            jail_stage_dns
+            cp "$CLAUDE_SANDBOX_JAIL_RESOLV" "$OUT" 2>/dev/null
+            rm -f "$CLAUDE_SANDBOX_JAIL_RESOLV"
+        ' >/dev/null 2>&1 && [ -s "$L4_OUT" ]; then
+        # Forwarder is the only nameserver, even though a routable one existed.
+        got="$(awk '/^nameserver/{print $2}' "$L4_OUT" | tr '\n' ' ')"
+        if [ "$got" = "$JAIL_DNS_FWD " ]; then pass
+        else fail "leg4 — staged resolv.conf must name only $JAIL_DNS_FWD, got: $got"; fi
+        # Search list survives — short names still resolve inside the jail.
+        if grep -q '^search cs\.example\.ac\.uk example\.ac\.uk$' "$L4_OUT"; then pass
+        else fail "leg4 — staged resolv.conf dropped the host search list (short names would stop resolving)"; fi
+        if grep -q '^options timeout:1$' "$L4_OUT"; then pass
+        else fail "leg4 — staged resolv.conf dropped the host options line"; fi
+    else
+        echo "SKIP(leg4): could not stage a resolv.conf fixture in a mount namespace" >&2
+    fi
+else
+    fail "leg4 — claude-shadow did not define jail_stage_dns"
 fi
 
 finish "egress_jail"

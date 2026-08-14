@@ -89,9 +89,13 @@ Channel Access broadcast are untouched. Only the shadow's launch is jailed:
   specific than the blackholes, so any one left un-blackholed stays fully
   reachable — the holder enumerates them all, not just the first), `unreachable`
   `169.254/16`; then punches back only — the **gateway** (`/32`, on-link), the
-  **DNS resolvers** (`/32` via gw; resolution is not lateral movement, since
-  connections to internal IPs stay blackholed), and the **`allow-ip` devices**
-  (`/32` via gw) from `/etc/claude-sandbox.conf`. The `/32` gateway/DNS/allow-ip
+  **pasta DNS forwarder** (`/32` via gw — a non-routable TEST-NET address, not a
+  real host), and the **`allow-ip` devices** (`/32` via gw) from
+  `/etc/claude-sandbox.conf`. Note what is *not* punched: the resolvers named in
+  `/etc/resolv.conf`. Those are real internal hosts, and a `/32` to one is
+  reachable on every port, not just 53 — a lateral-movement path for exactly the
+  compromised agent this ADR exists to contain. All DNS goes through the
+  forwarder instead (see below). The `/32` gateway/forwarder/allow-ip
   re-punches are *more specific* than the `/8`–`/10` blackholes, so longest-prefix
   match keeps them reachable while the surrounding range stays blocked. The holder
   locks these down **before** handing off to bwrap — ordering (netns created →
@@ -103,22 +107,38 @@ Channel Access broadcast are untouched. Only the shadow's launch is jailed:
   the launch so Claude never starts with an internal range reachable. The
   device/DNS punches are fail-soft (a missing one is lost reachability, not an
   open hole).
-- **Stub-resolver DNS via a pasta forwarder.** Punching `/32`s for the
-  `/etc/resolv.conf` resolvers only works when those resolvers are *routable*.
-  On a personal Ubuntu desktop the sole resolver is a **loopback stub**
-  (`127.0.0.53` from systemd-resolved, or Tailscale MagicDNS) that lives in the
-  **host** netns and answers nothing inside the jail — so every lookup gets
-  `ECONNREFUSED` and the API looks down (issue #60). The fix: pasta attaches with
+- **All DNS via the pasta forwarder — one path, always.** pasta attaches with
   `--dns-forward 192.0.2.53` (an RFC5737 TEST-NET address — globally
   non-routable, outside every blackholed range), making it listen on that
   address *inside* the netns and relay DNS to the host's real resolvers (pasta
-  runs in the host netns, so it reaches the loopback stub). When `claude-shadow`
-  detects an all-loopback `/etc/resolv.conf`, it binds a one-line
-  `nameserver 192.0.2.53` over Claude's `/etc/resolv.conf` and the holder routes
-  that `/32` via the gateway. Hosts with routable resolvers are unchanged (the
-  forwarder is staged but unused). Resolution stays *proxied* and internal IPs
-  stay blackholed, so the boundary is intact; if no resolver can be established
-  at all the jail says so rather than failing silently.
+  runs in the host netns). `claude-shadow` **always** binds a `resolv.conf`
+  naming `192.0.2.53` over Claude's, carrying the host's `search` / `domain` /
+  `options` lines across so short names still resolve, and the holder routes
+  that `/32` via the gateway. Two problems disappear at once:
+
+  - *Stub resolvers* (issue #60). On a personal Ubuntu desktop the sole resolver
+    is a **loopback stub** (`127.0.0.53` from systemd-resolved, or Tailscale
+    MagicDNS) living in the **host** netns, answering nothing inside the jail —
+    every lookup got `ECONNREFUSED` and the API looked down. pasta reaches it.
+  - *Resolver-shaped holes* (issue #11). The earlier design punched a `/32` per
+    resolver and only staged the forwarder on all-loopback hosts. Those punches
+    were the largest remaining hole in the blackhole, aimed at real internal
+    infrastructure. Forwarding unconditionally lets them be deleted outright.
+
+  Staging unconditionally is also required for *correctness*, not just posture.
+  `--dns-forward` implies pasta's `--dns-host` = the **first** resolver in the
+  host's `resolv.conf`, and pasta reverse-translates that host's port-53 replies
+  to appear to come from `192.0.2.53`. Any client querying resolver #1 directly
+  receives a reply from an unexpected source, which the kernel discards on a
+  connected UDP socket — so on *every routable-resolver host* the first resolver
+  read as dead from inside the jail while the others worked. glibc absorbed it
+  as a multi-second fallback; clients with shorter timeouts (e.g. `glab`) failed
+  outright. Enabling the forwarder was never side-effect-free; the only coherent
+  choices were "never enable it" or "route everything through it".
+
+  Resolution stays *proxied* and internal IPs stay blackholed, so the boundary is
+  intact; if no resolver can be established at all the jail says so rather than
+  failing silently.
 - **Security rests on userns ownership, not caplessness.** Claude is *not*
   capless here: because bwrap nests its userns inside the holder's unprivileged
   userns, the new userns grants Claude a **full** capability set (`CapBnd` =

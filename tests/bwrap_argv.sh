@@ -510,10 +510,11 @@ ARGV12b="$(HOME=/root CLAUDE_SANDBOX_GITCONFIG_PATH=/etc/claude-gitconfig \
 assert_not_contains scenario12-missing-no-bind "$ARGV12b" "/etc/resolv.conf"
 rm -f "$RESOLV_OVERRIDE"
 
-# --- Scenario 13: jail_stage_dns resolver detection (issue #60) ---
+# --- Scenario 13: jail_stage_dns always forwards (issues #60, #11) ---
 # Drives jail_stage_dns against a fixture resolv.conf via a RESOLV_CONF-aware
-# wrapper. Routable resolver => no override; loopback-only / empty => override
-# pointing Claude at the pasta forwarder.
+# wrapper. EVERY case overrides now: the jail has one DNS path, the pasta
+# forwarder, so netns_holder need punch no route to a real resolver (#11).
+# search / domain / options must survive the rewrite.
 FAKE_RESOLV="$(mktemp)"
 stage_dns_with() {
     # Re-source the shadow per case so a fresh CLAUDE_SANDBOX_JAIL_RESOLV is
@@ -533,22 +534,31 @@ stage_dns_with() {
     "
 }
 
-# Routable resolver present => keep host resolv.conf (NONE).
+# Routable resolver present => STILL overridden (#11). This is the case that
+# used to be left alone, and the one pasta's --dns-host translation broke.
 printf 'nameserver 8.8.8.8\n' > "$FAKE_RESOLV"
-assert_eq scenario13-routable "NONE" "$(stage_dns_with | tr -d '\n')"
+assert_eq scenario13-routable "OVERRIDE:nameserver 192.0.2.53" \
+    "$(stage_dns_with | tr -d '\n')"
 
 # Loopback-only (systemd-resolved stub) => forwarder override.
 printf 'nameserver 127.0.0.53\n' > "$FAKE_RESOLV"
 assert_eq scenario13-stub "OVERRIDE:nameserver 192.0.2.53" \
     "$(stage_dns_with | tr -d '\n')"
 
-# Mixed loopback + routable => routable wins, NONE.
+# Mixed loopback + routable => override, same as every other case.
 printf 'nameserver 127.0.0.53\nnameserver 192.168.1.1\n' > "$FAKE_RESOLV"
-assert_eq scenario13-mixed "NONE" "$(stage_dns_with | tr -d '\n')"
+assert_eq scenario13-mixed "OVERRIDE:nameserver 192.0.2.53" \
+    "$(stage_dns_with | tr -d '\n')"
 
 # Empty resolv.conf => forwarder override (best-effort, with a warning).
 printf '' > "$FAKE_RESOLV"
 assert_eq scenario13-empty "OVERRIDE:nameserver 192.0.2.53" \
+    "$(stage_dns_with | tr -d '\n')"
+
+# search / domain / options carried over verbatim; real resolvers dropped.
+printf 'search a.example b.example\nnameserver 8.8.8.8\noptions timeout:1\n' > "$FAKE_RESOLV"
+assert_eq scenario13-search \
+    "OVERRIDE:nameserver 192.0.2.53search a.example b.exampleoptions timeout:1" \
     "$(stage_dns_with | tr -d '\n')"
 rm -f "$FAKE_RESOLV"
 
