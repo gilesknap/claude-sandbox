@@ -413,6 +413,53 @@ linking enforce-org-wide from the DLS pages), and shortening the
 Style note for `docs/dls/` pages: no em dashes — rewrite with colons,
 parentheses, or semicolons (owner preference).
 
+## Never `sudo` — we are root inside a rootless container
+
+The devcontainer and the published image run as **root** (`uid 0`,
+`remoteUser=root`) inside a **rootless** container, so there is nothing to
+escalate to. `sudo` is **not installed**: prefixing a command with it fails
+with command-not-found, which reads as "the command is broken" rather than
+"drop the sudo". Write `./install`, `apt-get install passt`, `touch
+/etc/claude-code/allow-unwrapped` — never `sudo ./install` etc.
+
+The security model does not weaken as a result: root-in-a-rootless-container
+maps to the *unprivileged* host user, which is exactly why the container can be
+root inside and why `/etc` is still a meaningful trust boundary for the sandbox
+(root outside the jail, read-only inside it).
+
+**The one exception is GitHub Actions runners** — Invariant 3's
+`sudo mkdir -p /run/secrets` and the AppArmor/sysctl steps are correct there,
+because the runner user is *not* root. Don't "fix" those.
+
+Known wart (unfixed): several shipped strings still say `sudo` at users who
+will be root-in-container — `sandbox-gate.sh`'s BLOCKED message and
+`docs/explanations/integrity-guard.md` (`sudo touch
+/etc/claude-code/allow-unwrapped`), and the `diagnostics/probe-network-*.sh`
+install hints (`sudo apt-get install passt`). They're aimed at "the host
+operator", who in the DLS devcontainer flow is root already.
+
+## glab / gh helper-CLI foot-guns (`claude-sandbox glab-auth`)
+
+Verified against glab 1.36 / gh 2.45 while fixing #11-adjacent breakage:
+
+- **`glab auth login` has NO `--git-protocol`** (gh does; glab does not). Passing
+  it aborts the login with `unknown flag`, so no token is ever stored. Set the
+  protocol as config *after* login instead: `glab config set -h <host>
+  git_protocol https` (per-host correctly overrides the global default).
+- **glab's shipped `git_protocol` is `ssh`; gh's is `https`.** That asymmetry is
+  why `gh-auth` needed no protocol handling and `glab-auth` did.
+- **`glab config set <k> <v>` without `--global` or `-h` writes the
+  REPOSITORY-local `.git/glab-cli/config.yml`**, and *fails outright* outside a
+  git repo (`not a git repository`) — which under the CLI's `set -euo pipefail`
+  aborts the command right after a successful login. Always pass `--global` or
+  `-h <host>`.
+- **`glab auth login` wires the git credential helper itself**; `gh` needs an
+  explicit `gh auth setup-git`. Don't add a setup-git equivalent for glab.
+- Testing recipe: `GLAB_CONFIG_DIR=$(mktemp -d)` isolates a real login from the
+  user's credentials — but say so loudly, because a user who keeps that prefix
+  for the *real* login writes their token to a throwaway dir and the sandbox
+  never sees it (happened).
+
 ## Running the test suites from inside a jailed session
 
 `tests/smoke.sh` run as-is inside a jailed claude cascade-fails ~21
