@@ -52,15 +52,17 @@ EOF
     gh auth status
 }
 
-# Authenticate glab CLI with a GitLab PAT (token not stored in shell history).
-# --git-protocol https prevents glab's SSH insteadOf rewrite.
+# Authenticate glab CLI with a GitLab PAT (token not stored in shell history)
+# and pin the instance to HTTPS, so glab never drives git over SSH.
 cmd_glab_auth() {
     local hostname="${1:-gitlab.diamond.ac.uk}" url t
-    url=$'\e[4;36mhttps://gitlab.com/-/user_settings/personal_access_tokens\e[0m'
+    # Derive the PAT page from the instance being authenticated. A hardcoded
+    # gitlab.com URL sends self-hosted users to the wrong site to mint a token
+    # that is then offered to a different instance.
+    url=$'\e[4;36m'"https://$hostname/-/user_settings/personal_access_tokens"$'\e[0m'
     cat <<EOF
 Create or renew a fine-grained PAT at:
   $url
-  (or your organisation's GitLab instance equivalent)
 
 Recommended scopes for a sandboxed Claude Code:
   - api, read_repository, write_repository
@@ -68,8 +70,24 @@ Recommended scopes for a sandboxed Claude Code:
 
 EOF
     read -sp "GitLab PAT for $hostname: " t && echo
-    echo "$t" | glab auth login --stdin --hostname "$hostname" --git-protocol https
+    echo "$t" | glab auth login --stdin --hostname "$hostname"
     unset t
+    # glab has no `auth login --git-protocol` flag (it does not exist in glab
+    # 1.36); passing one aborts the login. git_protocol is config, and its
+    # shipped default is ssh — which a sandbox has no key for. Set it per-host
+    # so only the instance just authenticated is pinned to https.
+    glab config set -h "$hostname" git_protocol https
+    # glab auth login records the token against the host but leaves the
+    # default host alone — it ships as gitlab.com. Outside a git repo, and in
+    # any repo whose remote glab cannot map, bare `glab` commands then query
+    # gitlab.com and fail as unauthenticated. Point the default at the
+    # instance just authenticated.
+    # --global is required: without it `glab config set` writes the
+    # repository-local .git/glab-cli/config.yml (leaving the real default at
+    # gitlab.com), and outside a git repo it fails outright with "not a git
+    # repository" — which under `set -e` would abort us right after login.
+    glab config set --global host "$hostname"
+    echo "Default glab host set to $hostname."
     glab auth status
 }
 
