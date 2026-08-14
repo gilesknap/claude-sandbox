@@ -40,7 +40,9 @@ bash tests/egress_jail.sh                         # network egress jail
 ```
 
 `CLAUDE_SANDBOX_SMOKE=1` keeps the first two off the network and out of
-`/`; they install into a tmpdir instead. `tests/egress_jail.sh` needs
+`/`; they install into a tmpdir instead. All four want **root** — which a
+devcontainer already gives you, so no `sudo`; CI adds it because its
+runner is not root. `tests/egress_jail.sh` needs
 `CAP_NET_ADMIN` and its own network namespace, so it **skips** when run
 from inside a sandboxed Claude session (namespaces can't nest there) —
 run it from an unsandboxed devcontainer terminal. CI runs it with

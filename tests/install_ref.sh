@@ -21,7 +21,12 @@
 # are fixed and every tagged commit carries a STUB install.sh. Checking
 # out a real tag would otherwise run that tag's REAL installer.
 #
-# Run via `bash tests/install_ref.sh`. Needs no root and no capabilities.
+# Run via `bash tests/install_ref.sh`. Needs no capabilities, but DOES need
+# root — not for anything it does (the stub installer touches nothing), only
+# to clear the shim's own `id -u` gate, which is part of the contract under
+# test. In a devcontainer you are already root; CI uses `sudo -E`.
+# CLAUDE_SANDBOX_SMOKE=1 would clear that gate too, but it also forces
+# --here, which is precisely what the interesting cases here are not.
 
 set -uo pipefail
 
