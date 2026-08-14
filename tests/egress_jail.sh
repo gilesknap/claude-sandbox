@@ -17,11 +17,14 @@
 # routing-allowlist + fail-closed assertions need only CAP_NET_ADMIN — NOT
 # pasta/tun. A separate pasta-backed live leg runs only when pasta + /dev/net/tun
 # are also present; absence of any prerequisite SKIPs cleanly (clear message,
-# exit 0) so CI never flakes.
+# exit 0) so a dev box or an in-jail session — where namespaces cannot nest —
+# can still run the suite.
 #
-#   bash tests/egress_jail.sh
+#   bash tests/egress_jail.sh                      # skips when caps are absent
+#   EGRESS_JAIL_REQUIRE=1 bash tests/egress_jail.sh  # a skip is a FAILURE (CI)
 #
-# Exit: 0 = all assertions passed OR cleanly skipped; 1 = a real assertion failed.
+# Exit: 0 = all assertions passed OR cleanly skipped; 1 = a real assertion
+# failed, or a skip occurred under EGRESS_JAIL_REQUIRE=1.
 
 set -uo pipefail
 
@@ -32,13 +35,41 @@ SHADOW="$REPO_ROOT/.devcontainer/claude-sandbox/claude-shadow"
 # shellcheck source=lib.sh
 source "$REPO_ROOT/tests/lib.sh"
 
+# EGRESS_JAIL_REQUIRE=1 (set by CI) turns every skip in this file into a hard
+# failure. Skipping is right for a developer box or an in-jail session, where
+# namespaces cannot nest and hard-failing would make the suite unrunnable — but
+# in CI a skip is INVISIBLE: the check goes green either way, and the only
+# evidence is a log line nobody reads on a passing run. This file is the jail
+# enforcement's ONLY automated coverage, so a runner that quietly stops granting
+# unshare/CAP_NET_ADMIN would silently retire every blackhole and fail-closed
+# assertion while PRs stayed green — exactly the CI-green regression the file
+# exists to catch. Requiring the run in CI makes green mean "enforced".
+: "${EGRESS_JAIL_REQUIRE:=0}"
+
 # skip MSG — print a clear, non-failing skip notice and exit 0 so a runner that
 # can't grant the caps logs WHAT was skipped (no silent no-op, no pretend
-# coverage) and CI stays green.
+# coverage) and CI stays green. Under EGRESS_JAIL_REQUIRE=1 this is fatal.
 skip() {
+    if [ "$EGRESS_JAIL_REQUIRE" = "1" ]; then
+        echo "FAIL: egress_jail — $1" >&2
+        echo "egress_jail: EGRESS_JAIL_REQUIRE=1 and the prerequisites are absent — refusing to report success for a run that asserted nothing." >&2
+        exit 1
+    fi
     echo "SKIP: egress_jail — $1" >&2
     echo "egress_jail: skipped (no netns/CAP_NET_ADMIN here — caps required)"
     exit 0
+}
+
+# leg_skip LEG MSG — same contract for ONE leg of an otherwise-running suite.
+# These are the more dangerous skips: the run still ends "N passed / 0 failed",
+# just with a smaller N, so a lost leg is indistinguishable from a pass unless
+# you already know what N should be.
+leg_skip() {
+    if [ "$EGRESS_JAIL_REQUIRE" = "1" ]; then
+        fail "$1 — $2 (EGRESS_JAIL_REQUIRE=1: this leg must not skip)"
+        return 0
+    fi
+    echo "SKIP($1): $2" >&2
 }
 
 [ -r "$SHADOW" ] || skip "claude-shadow not found at $SHADOW"
@@ -302,10 +333,10 @@ if command -v pasta >/dev/null 2>&1 && [ -e /dev/net/tun ]; then
         else fail "leg3 — no default route after pasta --config-net: $l3"; fi
     else
         kill "$HOLDER" 2>/dev/null || true
-        echo "SKIP(leg3): pasta could not attach a netns here (see $PASTA_LOG) — IPv6/default-route leg not run" >&2
+        leg_skip leg3 "pasta could not attach a netns here (see $PASTA_LOG) — IPv6/default-route leg not run"
     fi
 else
-    echo "SKIP(leg3): pasta and/or /dev/net/tun absent — live IPv6/default-route leg not run (core enforcement above DID run)" >&2
+    leg_skip leg3 "pasta and/or /dev/net/tun absent — live IPv6/default-route leg not run (core enforcement above DID run)"
 fi
 
 # ===========================================================================
@@ -337,7 +368,7 @@ if declare -F jail_stage_dns >/dev/null; then
         if grep -q '^options timeout:1$' "$L4_OUT"; then pass
         else fail "leg4 — staged resolv.conf dropped the host options line"; fi
     else
-        echo "SKIP(leg4): could not stage a resolv.conf fixture in a mount namespace" >&2
+        leg_skip leg4 "could not stage a resolv.conf fixture in a mount namespace"
     fi
 else
     fail "leg4 — claude-shadow did not define jail_stage_dns"
