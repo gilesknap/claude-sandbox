@@ -36,6 +36,11 @@ rootless-podman pattern):
 cd /tmp && rm -rf claude-sandbox && git clone https://github.com/DiamondLightSource/claude-sandbox && claude-sandbox/install
 ```
 
+This installs the newest **release**, not the tip of `main` — `install`
+checks the newest release tag out first and prints which one it picked
+(`--here` installs the checkout as-is; `--release REF` picks a specific
+one).
+
 Then run `claude` as usual — the shadow on `$PATH` wraps every invocation.
 Nothing depends on the clone after install, so a clone in `/tmp` is fine —
 it evaporates with the container. The installer is idempotent; wire the

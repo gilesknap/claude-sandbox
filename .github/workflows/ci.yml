@@ -50,6 +50,12 @@ jobs:
           mkdir -p "$HOME/.claude" "$HOME/.cache"
           CLAUDE_SANDBOX_SMOKE=1 bash tests/bwrap_argv.sh
 
+      # Which git ref `install` selects, and when it refuses to select one.
+      # Hermetic (builds its own throwaway origin+clone) and needs no root,
+      # so it runs before the smoke test rather than inside it.
+      - name: Run install revision-selection tests
+        run: bash tests/install_ref.sh
+
       - name: Run install smoke test
         run: |
           export HOME=/tmp/sandbox-home

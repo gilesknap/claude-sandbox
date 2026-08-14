@@ -66,6 +66,12 @@ In a terminal inside the container:
 cd /tmp && rm -rf claude-sandbox && git clone https://github.com/DiamondLightSource/claude-sandbox && claude-sandbox/install
 ```
 
+This installs the **newest release**, not the tip of `main`: the clone
+lands on the default branch, and `install` then checks out the newest
+release tag before installing it — the same revision `claude-sandbox
+update` would give you. It prints which one it picked. (To install a
+specific release instead: `claude-sandbox/install --release 3.0.0`.)
+
 The clone is **disposable** — nothing depends on it after install (the
 `claude-sandbox` helper CLI lands on your PATH, and
 `claude-sandbox update` fetches its own fresh clone when you upgrade), so
@@ -118,7 +124,9 @@ The shadow is re-established **without re-downloading Claude**.
 
 Your statusline script is seeded once and then left alone, so edits you make
 to it survive re-runs. If you'd rather a re-run pull the clone's current
-statusline, run `STATUS=1 <clone>/install`.
+statusline, run `STATUS=1 <clone>/install --here` (`--here` because the
+clone is now checked out at the release it installed, and re-running
+without it would ask to move to a newer one).
 
 ---
 
