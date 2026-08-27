@@ -25,11 +25,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # actions/checkout runs as the runner user but the container runs as
+      # root, so git refuses the workspace as dubiously owned and upload-sarif
+      # cannot read the commit SHA from it.
+      - name: Mark workspace safe for git
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
       # This repo is Shell + Dockerfile, both of which Semgrep only supports
       # at "experimental" maturity, so p/bash and p/dockerfile are thin. The
       # packs that actually earn their place are p/secrets (committed creds)
       # and p/github-actions (workflow injection, unpinned actions).
-      # No SEMGREP_APP_TOKEN: OSS rules only, no semgrep.dev account.
+      #
+      # No SEMGREP_APP_TOKEN: OSS rules only, no semgrep.dev account, and
+      # --metrics=off so no scan telemetry leaves the runner.
+      #
+      # `semgrep scan` exits 0 even when it has findings, so this reports into
+      # code scanning without gating the PR. Add `--error` to make it blocking.
       - name: Semgrep scan
         run: |
           semgrep scan \
@@ -38,11 +49,10 @@ jobs:
             --config p/github-actions \
             --config p/secrets \
             --sarif --output semgrep.sarif \
-            --metrics=off \
-            --error=false
+            --metrics=off
 
       - name: Upload SARIF to code scanning
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         if: always()
         with:
           sarif_file: semgrep.sarif
