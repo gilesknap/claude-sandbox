@@ -1,0 +1,59 @@
+name: Semgrep
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  schedule:
+    # Weekly, so new registry rules land on old code too.
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  semgrep:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Required to publish findings to the code scanning dashboard.
+      security-events: write
+    container:
+      image: semgrep/semgrep
+    steps:
+      - uses: actions/checkout@v4
+
+      # actions/checkout runs as the runner user but the container runs as
+      # root, so git refuses the workspace as dubiously owned and upload-sarif
+      # cannot read the commit SHA from it.
+      - name: Mark workspace safe for git
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      # There is no published Semgrep ruleset for shell: p/bash and p/shell are
+      # both 404 at the registry, and Semgrep rates Bash as experimental. So
+      # the shell in this repo is covered by shellcheck in the lint job, not
+      # here. p/secrets (committed creds) and p/github-actions (workflow
+      # injection, unpinned actions) are what this scan actually contributes.
+      #
+      # No SEMGREP_APP_TOKEN: OSS rules only, no semgrep.dev account, and
+      # --metrics=off so no scan telemetry leaves the runner.
+      #
+      # `semgrep scan` exits 0 even when it has findings, so this reports into
+      # code scanning without gating the PR. Add `--error` to make it blocking.
+      - name: Semgrep scan
+        run: |
+          semgrep scan \
+            --config p/dockerfile \
+            --config p/github-actions \
+            --config p/secrets \
+            --sarif --output semgrep.sarif \
+            --metrics=off
+
+      - name: Upload SARIF to code scanning
+        uses: github/codeql-action/upload-sarif@v4
+        if: always()
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep
