@@ -1,0 +1,49 @@
+name: Semgrep
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  schedule:
+    # Weekly, so new registry rules land on old code too.
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  semgrep:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Required to publish findings to the code scanning dashboard.
+      security-events: write
+    container:
+      image: semgrep/semgrep
+    steps:
+      - uses: actions/checkout@v4
+
+      # This repo is Shell + Dockerfile, both of which Semgrep only supports
+      # at "experimental" maturity, so p/bash and p/dockerfile are thin. The
+      # packs that actually earn their place are p/secrets (committed creds)
+      # and p/github-actions (workflow injection, unpinned actions).
+      # No SEMGREP_APP_TOKEN: OSS rules only, no semgrep.dev account.
+      - name: Semgrep scan
+        run: |
+          semgrep scan \
+            --config p/bash \
+            --config p/dockerfile \
+            --config p/github-actions \
+            --config p/secrets \
+            --sarif --output semgrep.sarif \
+            --metrics=off \
+            --error=false
+
+      - name: Upload SARIF to code scanning
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep
