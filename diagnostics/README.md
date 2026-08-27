@@ -2,9 +2,8 @@
 
 Operator-only validation tools for the network egress jail (ADR 0015 /
 issue #56). **Not part of the audited product surface**: nothing in
-`install.sh`, `promote.sh`, the `justfile`, or CI references these — they are
-not installed on a host, not copied by `just promote`, and not run by the
-test suite. They exist as live proof-of-concept evidence for ADR 0015 and as
+`install.sh`, the `claude-sandbox` CLI, or CI references these — they are
+not installed on a host and not run by the test suite. They exist as live proof-of-concept evidence for ADR 0015 and as
 troubleshooting aids when the jail won't come up on a new host.
 
 **Run them UNJAILED** — from a normal terminal, not from inside a sandboxed

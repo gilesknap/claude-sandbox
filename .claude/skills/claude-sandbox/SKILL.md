@@ -1,13 +1,13 @@
 ---
 name: claude-sandbox
-description: Architecture invariants, refuse-lists, and walked-back paths for this repo's bwrap sandbox core (shadow, installer, promote, integrity guard). Surface before editing `.devcontainer/claude-sandbox/*`, `install`, `tests/`, `.github/workflows/ci.yml`, or `.claude/commands/verify-sandbox.md` — or before any suggestion to re-add Python tooling, persist gh/glab PATs, auto-edit devcontainer.json, read conf from the workspace, move the integrity guard out of managed-settings, re-enable the auto-updater, expose a host container-engine socket, or pass-env secrets. Container-image/launcher topics: claude-sandbox-container skill. Network/egress topics: claude-sandbox-networking skill.
+description: Architecture invariants, refuse-lists, and walked-back paths for this repo's bwrap sandbox core (shadow, installer, integrity guard). Surface before editing `.devcontainer/claude-sandbox/*`, `install`, `tests/`, `.github/workflows/ci.yml`, or `.claude/commands/verify-sandbox.md` — or before any suggestion to re-add Python tooling, persist gh/glab PATs, auto-edit devcontainer.json, read conf from the workspace, move the integrity guard out of managed-settings, re-enable the auto-updater, expose a host container-engine socket, or pass-env secrets. Container-image/launcher topics: claude-sandbox-container skill. Network/egress topics: claude-sandbox-networking skill.
 ---
 
 # claude-sandbox
 
 Project-specific architecture decisions. The code documents *what*;
 this skill documents *why* and *what regressions to refuse*. Threat
-model: [threat model](https://gilesknap.github.io/claude-sandbox/explanations/threat-model.html); live verification: `/verify-sandbox`
+model: [threat model](https://diamondlightsource.github.io/claude-sandbox/explanations/threat-model.html); live verification: `/verify-sandbox`
 (the command markdown `.claude/commands/verify-sandbox.md` documents the
 *why* of each check; the phase-1 PASS/FAIL battery is the committed
 script `.devcontainer/claude-sandbox/verify-sandbox-battery.sh`, run by
@@ -21,9 +21,9 @@ the checks need were silently blanked when injected from the .md —
 file on disk dodges that, the shebang pins bash (no zsh `nomatch` glob
 abort), and `/usr/libexec` placement makes it ro inside the sandbox so a
 compromised session can't rewrite the verifier to print PASS. install.sh
-places it via `install_guard_scripts`; promote ships it; smoke + promote
-tests assert placement/mode and that it runs-to-format-and-exits-nonzero
-outside a sandbox.
+places it via `install_guard_scripts`; the smoke test asserts
+placement/mode and that it runs-to-format-and-exits-nonzero outside a
+sandbox.
 
 ## Invariant 1 — plain `claude` MUST resolve to the shadow
 
@@ -51,7 +51,7 @@ conventional path.
 relocate — provided plain `claude` still cannot resolve past
 `/usr/local/bin/claude`.
 
-## Invariant 2 — PATs are container-scoped; `just gh-auth` per rebuild is deliberate
+## Invariant 2 — PATs are container-scoped; `claude-sandbox gh-auth` per rebuild is deliberate
 
 The re-paste-on-rebuild ceremony for `gh` / `glab` PATs is the cost
 of keeping blast radius small: fine-grained PATs typically cover
@@ -109,87 +109,25 @@ have been done in `install.sh`. Ask "would this work for a
 clone+install inside an unrelated devcontainer?" — if not, push it
 into `install.sh`.
 
-## Design principle — `just promote` does three layers, never edits JSONC
+## Design principle — never auto-edit `devcontainer.json`
 
-`just promote <target>` (PR #20, issue #18) makes a target workspace
-a self-sufficient claude-sandbox host:
-
-1. **Curated `.claude/`** — commands + skills only. The integrity guard
-   is global (see Invariant 5), wired into user-scope `~/.claude` by
-   `install.sh`; promote no longer seeds a per-repo hook, statusline, or
-   project `settings.json`.
-2. **Install machinery** — `.devcontainer/claude-sandbox/{install.sh,
-   claude-shadow, promote.sh}` + root `justfile`. The justfile is
-   shipped verbatim, so its recipes must all be promote-target-safe;
-   source-repo-only recipes (`test`, `upgrade`, `verify`) were dropped
-   for this reason. The root `install` shim is *not* copied; it's the
-   source repo's manual-UX entry (`./install`), not a target workflow.
-3. **`.devcontainer/postCreate.sh`** running
-   `bash .devcontainer/claude-sandbox/install.sh` (created if absent,
-   idempotently appended otherwise). Promote then prints a one-line
-   `postCreateCommand` snippet for the user to paste into
-   `devcontainer.json` — we do **not** edit it.
-
-**Refuse as a regression**: auto-editing `devcontainer.json`. It's
-JSONC in the wild and comment-preserving structured edits need
-either ~50 lines of awk (string/block-comment state-tracking) or a
-node/python lib dependency — both rejected in PR #20. The user knows
-whether they've wired the line or need to chain it. "Strip and
-re-insert comments" isn't simpler either — re-insert needs stable
-anchors that survive the edit. Print the snippet; trust them.
-
-**Two intentional don't-update edges in re-promote** — the only
-gaps in the "re-promote = full sync" mental model:
-
-- The user-scope statusline (`install_file_if_absent` +
-  `.statusLine` set only-if-absent in `wire_user_statusline`) is
-  *create-if-absent*. An existing one (ours or the owner's) is left
-  alone. This lives in `install.sh`, not promote — but the same
-  respect-the-owner policy applies.
-- `wire_postcreate_script` only checks whether `bash install` is on
-  any line of `postCreate.sh`. The file body is never rewritten if
-  the file exists.
-
-Everything else propagates via `install_file`'s `cmp -s`
-overwrite-on-diff.
+Wiring a target's `postCreateCommand` is always a print-the-snippet,
+user-pastes affair. `devcontainer.json` is JSONC in the wild and
+comment-preserving structured edits need either ~50 lines of awk
+(string/block-comment state-tracking) or a node/python lib dependency —
+both rejected in PR #20, and the rationale outlives promote (ADR 0017).
+The user knows whether they've wired the line or need to chain it.
+"Strip and re-insert comments" isn't simpler either — re-insert needs
+stable anchors that survive the edit. Print the snippet; trust them.
 
 **Source-guard pattern**: `install.sh` ends with
-`[ "${BASH_SOURCE[0]}" = "$0" ] && main "$@"` so `promote.sh` can
-`source install.sh` to reuse `install_file` (and friends) without
-re-running `main`. Don't remove the guard.
-
-## Considered alternative — postCreate references shared clone (declined)
-
-A natural-sounding refinement: drop layer 2 of promote (the
-install-machinery copy) and have the target's `postCreate.sh` invoke
-`install.sh` directly from the canonical clone, e.g.
-`bash /user-terminal-config/claude-sandbox/.devcontainer/claude-sandbox/install.sh`.
-Drift auto-resolves on `git pull` of the canonical clone; audit
-surface stays single-tracked. (Variant: do this from bashrc — even
-weaker, since `install.sh` does root-level work, see invariant 1.)
-
-Declined because it sacrifices two properties promote-by-copy
-deliberately optimises for:
-
-- **Self-sufficiency.** `git clone <target> && ./install` works in
-  any devcontainer. Reference-by-path requires the shared clone on
-  every host — breaks CI runners, clean VMs, collaborators with
-  different layouts.
-- **Frozen audit surface.** Promote-by-copy means "what ran is what's
-  at this SHA in this repo." Reference-by-path means what runs
-  depends on whichever HEAD the shared clone happens to be at. Drift
-  you can see beats drift you can't.
-
-If a future request says "just point postCreate at the shared clone",
-surface this tradeoff before agreeing. Acceptable compromise if
-explicitly asked: an *opt-in* recipe (e.g. `just
-wire-postcreate-shared`) alongside today's frozen-copy default. Do
-**not** "retain both mechanisms and keep them synced" — that's the
-synchronisation debt Reversal 2 walked away from.
+`[ "${BASH_SOURCE[0]}" = "$0" ] && main "$@"` so the container image
+build (Dockerfile) can `source install.sh` to reuse its functions
+without re-running `main`. Don't remove the guard.
 
 ## Historical reversals — raise before re-treading
 
-Two paths walked back. If a change suggests either, surface the
+Three paths walked back. If a change suggests one of them, surface the
 history and re-justify against the underlying principle — **the
 sandbox's surface must stay small enough to audit in one read** —
 before proceeding.
@@ -225,6 +163,31 @@ is prior art, **not** maintained.
 - Adding a `template/` directory or `copier.yml`.
 - "Let's keep a copy synced into python-copier-template" — the
   template should *consume* this repo, not embed it.
+
+### Reversal 3 — `just promote` (copy-by-value into targets)
+
+`just promote` (PR #20, ADR 0010) copied the install machinery —
+`install.sh`, `claude-shadow`, the guard scripts, the battery — by
+value into target workspaces so they became self-sufficient hosts.
+Removed 2026-07-24 (ADR 0017): frozen per-project copies of
+security-critical code have no update channel (a fix here never
+reaches a promoted target; nothing signals staleness), it
+re-proliferated the single auditable home Reversal 2 was extracted
+for, and ADR 0016 showed it ships the guard-restamp trust anchors
+into every target's *writable* workspace. Replacements: a target's
+`postCreate` clones this repo **at a pinned tag** and runs
+`./install` (docs/how-to/sandbox-a-team-devcontainer.md), or the
+container image. Pinning keeps ADR 0010's "what ran is what's at
+this SHA" property; note this is *not* the mutable-shared-clone
+variant ADR 0010 rightly declined (that ran whatever HEAD happened
+to be checked out).
+
+**Refuse without justification:**
+- Re-adding any mechanism that copies `install.sh` / `claude-shadow` /
+  the guard scripts into a consuming repo (promote by another name,
+  vendoring recipes, "sync" scripts).
+- Pointing a target's `postCreate` at a mutable shared clone's HEAD —
+  pin a tag or SHA instead.
 
 ## Diagnostic discipline — silent in-sandbox check failures
 
@@ -278,14 +241,19 @@ Two reasons, one load-bearing for the threat model:
   cross-session breakout. `/etc` is not in the rw bind set.
 - **Ergonomics.** One global conf means `allow-write = /cache` (uv) and
   friends apply to `claude` in every workspace with nothing added to
-  individual repos. Edit the clone conf + re-run `./install` (a rebuild
-  does it via postCreate) to apply.
+  individual repos. The documented user flow (2026-07-24, post
+  disposable-clone install) is editing `/etc/claude-sandbox.conf`
+  directly from an unsandboxed root shell — same trust boundary, the
+  shadow re-reads it at every launch. Edits are per-container and are
+  reset by a rebuild / re-install / `claude-sandbox update`; persistence
+  across rebuilds is an open follow-up. Teams bake persistent conf into
+  the pinned clone before `./install` runs.
 
 `parse_config` still takes the path as `$1` (tests pass a fixture); only
 the launch-time call site is pinned to `CONFIG_PATH`. Env vars
-(`CLAUDE_SANDBOX_*`) still override per session. `just promote` still
-ships a starter conf into a promoted target's `.devcontainer/`, whose own
-`install.sh` reads it into `/etc` (keeps promoted hosts self-sufficient).
+(`CLAUDE_SANDBOX_*`) still override per session. A team ships custom
+conf by writing it into the clone before `postCreate` runs `./install`
+(see docs/how-to/sandbox-a-team-devcontainer.md).
 
 **Refuse as regressions:**
 - Any change that reads the conf from `$PWD`, the workspace, or any
@@ -323,7 +291,7 @@ their own `~/.claude/settings.json`. Two hooks, wired by
   lean fail-closed gate, `exit 2` (blocks the prompt) unless
   `IS_SANDBOX=1`. Escape hatch: the ROOT-OWNED flag
   `/etc/claude-code/allow-unwrapped` (stamped by `install.sh` when
-  `ALLOW_UNWRAPPED=1`, or `sudo touch`). It is a flag under `/etc`, NOT an
+  `DANGEROUSLY_ALLOW_CLAUDE_SANDBOX_UNWRAPPED=1`, or `sudo touch`). It is a flag under `/etc`, NOT an
   env var, because a confined Claude can write `~/.claude/settings.json`
   (host-shared) and Claude Code exports its `env` block into later
   sessions — so the old `CLAUDE_SANDBOX_ALLOW_UNWRAPPED=1` env hatch was
@@ -413,9 +381,147 @@ adding a doc recipe or example that binds a *host* engine socket in
 that `pass-env` a token/credential var. Mechanism stays; the docs must
 keep saying what it costs.
 
+## Policy — weakening switches exist but are never advertised
+
+DLS-rollout decision (2026-07-24, PR #5): making the sandbox trustworthy
+is the operator's job, not each user's. Switches that weaken the sandbox
+stay supported for operators who know the risks, but must NOT be
+surfaced in user-facing docs or in code messages:
+
+- `CLAUDE_SANDBOX_EGRESS_JAIL=0` / conf `egress-jail = 0`: never named
+  in how-tos, the tutorial, README, shipped-conf comments, or the
+  shadow's error/warning messages (`jail_fail` names only the real fix).
+  Reference pages say "an operator opt-out exists but is deliberately
+  not documented"; explanations keep their *analytical* mentions — the
+  fail-closed-plus-hatch design is a fact auditors need.
+- `DANGEROUSLY_ALLOW_CLAUDE_SANDBOX_UNWRAPPED=1` (install-time seam;
+  renamed 2026-07-24 from `ALLOW_UNWRAPPED`, whose old name is dead —
+  smoke asserts it no longer stamps the flag; the flag path
+  `/etc/claude-code/allow-unwrapped` is unchanged). Managing the flag is
+  documented ONLY on `docs/how-to/enforce-org-wide.md`, the IT-operator
+  page — and the DLS pages (`docs/dls/`) must NOT link that page, since
+  linking it surfaces the hatch to every reader.
+- Verification is not a user chore: quickstarts carry no verify step;
+  the verify how-to is reachable as a Next-steps pointer.
+
+**Refuse as regressions:** any doc or message change that re-advertises
+a weakening switch (naming `EGRESS_JAIL=0` in an error, restoring a
+"disable the jail" section, a conf comment showing the disable line,
+linking enforce-org-wide from the DLS pages), and shortening the
+`DANGEROUSLY_` name back to something comfortable.
+
+Style note for `docs/dls/` pages: no em dashes — rewrite with colons,
+parentheses, or semicolons (owner preference).
+
+## `install` picks a RELEASE by default — `--here` installs the checkout
+
+`install` (the root shim, not `install.sh`) resolves **which revision** to
+install before exec'ing `install.sh`:
+
+| invocation | installs |
+|---|---|
+| `install` | newest stable release **tag** |
+| `install --here` | this working tree, as checked out |
+| `install --release [REF]` | REF, or newest stable tag; retargets even a pinned/dirty clone |
+
+Why the default is a tag, not the checkout: the documented one-liner clones
+`main` (unreleased work) while `claude-sandbox update` has always installed
+the newest tag — so a first install and every later update disagreed about
+what "current" means. Release selection now lives in `install` only, and
+`cmd_update` delegates to it: **one** implementation of "what is current".
+
+Prereleases are excluded by an explicit filter. A beta sorts *above* the
+release it precedes (`2.1.0-beta.1` > `2.0.0`), so "newest tag" without the
+filter would hand betas to everyone running `update`.
+
+**The refusal is the load-bearing part.** On a pinned (detached / non-default
+branch) or locally-modified clone the default **refuses** instead of
+retargeting. Teams pin a revision and bump it as a reviewed act (ADR 0017);
+a silent bump would defeat the pin on every teammate's next rebuild with
+nothing in the diff to show for it.
+
+**Refuse as regressions:**
+
+- Making the default retarget a pinned or dirty clone "for convenience".
+- Dropping `--here` from `.devcontainer/postCreate.sh` (this repo's own
+  devcontainer — without it a rebuild replaces the branch under test with
+  the last release) or from
+  `docs/how-to/sandbox-a-team-devcontainer.md`.
+- Re-adding tag selection to `cmd_update` (two implementations that drift).
+- Removing the prerelease filter, or the `bash -c` argv trick around the
+  checkout — `git checkout` rewrites `install` while bash is still reading
+  it, so everything after the checkout must live in argv, not in the file.
+- Letting `CLAUDE_SANDBOX_SMOKE=1` retarget: a smoke run must test the
+  checkout it was pointed at.
+
+Coverage: `tests/install_ref.sh` (hermetic — builds its own origin+clone
+with synthetic tags; needs no root or caps).
+
+## Never `sudo` — we are root inside a rootless container
+
+The devcontainer and the published image run as **root** (`uid 0`,
+`remoteUser=root`) inside a **rootless** container, so there is nothing to
+escalate to. `sudo` is **not installed**: prefixing a command with it fails
+with command-not-found, which reads as "the command is broken" rather than
+"drop the sudo". Write `./install`, `apt-get install passt`, `touch
+/etc/claude-code/allow-unwrapped` — never `sudo ./install` etc.
+
+The security model does not weaken as a result: root-in-a-rootless-container
+maps to the *unprivileged* host user, which is exactly why the container can be
+root inside and why `/etc` is still a meaningful trust boundary for the sandbox
+(root outside the jail, read-only inside it).
+
+**The one exception is GitHub Actions runners** — Invariant 3's
+`sudo mkdir -p /run/secrets` and the AppArmor/sysctl steps are correct there,
+because the runner user is *not* root. Don't "fix" those.
+
+Known wart (unfixed): several shipped strings still say `sudo` at users who
+will be root-in-container — `sandbox-gate.sh`'s BLOCKED message and
+`docs/explanations/integrity-guard.md` (`sudo touch
+/etc/claude-code/allow-unwrapped`), and the `diagnostics/probe-network-*.sh`
+install hints (`sudo apt-get install passt`). They're aimed at "the host
+operator", who in the DLS devcontainer flow is root already.
+
+## glab / gh helper-CLI foot-guns (`claude-sandbox glab-auth`)
+
+Verified against glab 1.36 / gh 2.45 while fixing #11-adjacent breakage:
+
+- **`glab auth login` has NO `--git-protocol`** (gh does; glab does not). Passing
+  it aborts the login with `unknown flag`, so no token is ever stored. Set the
+  protocol as config *after* login instead: `glab config set -h <host>
+  git_protocol https` (per-host correctly overrides the global default).
+- **glab's shipped `git_protocol` is `ssh`; gh's is `https`.** That asymmetry is
+  why `gh-auth` needed no protocol handling and `glab-auth` did.
+- **`glab config set <k> <v>` without `--global` or `-h` writes the
+  REPOSITORY-local `.git/glab-cli/config.yml`**, and *fails outright* outside a
+  git repo (`not a git repository`) — which under the CLI's `set -euo pipefail`
+  aborts the command right after a successful login. Always pass `--global` or
+  `-h <host>`.
+- **`glab auth login` wires the git credential helper itself**; `gh` needs an
+  explicit `gh auth setup-git`. Don't add a setup-git equivalent for glab.
+- Testing recipe: `GLAB_CONFIG_DIR=$(mktemp -d)` isolates a real login from the
+  user's credentials — but say so loudly, because a user who keeps that prefix
+  for the *real* login writes their token to a throwaway dir and the sandbox
+  never sees it (happened).
+
+## Running the test suites from inside a jailed session
+
+`tests/smoke.sh` run as-is inside a jailed claude cascade-fails ~21
+checks: `link_terminal_config` operates on the real `$HOME`, where the
+jail's `~/.claude.json` file bind goes ESTALE after Claude Code's
+rename-replace, and `_is_mount`'s `[ -e ]` misreads ESTALE as absent.
+Workaround (verified 2026-07-24, 59/59):
+
+```bash
+HOME=$(mktemp -d) CLAUDE_SANDBOX_SMOKE=1 bash tests/smoke.sh
+```
+
+`tests/bwrap_argv.sh` runs fine in-jail. `tests/egress_jail.sh` cannot
+(needs `unshare`, and namespaces don't nest here) — trust CI for it.
+
 ## Third consumer — the published container image
 
-The image `ghcr.io/gilesknap/claude-sandbox` + `container/claude-container`
+The image `ghcr.io/diamondlightsource/claude-sandbox` + `container/claude-container`
 launcher (PR #78) is the third consumer after dogfood and guest. Its
 design decisions (image build sources `install.sh`, entrypoint re-runs,
 PAT scoping via named containers, ro-mounted conf, notify-only launcher
@@ -430,19 +536,17 @@ image/launcher topics. Touch the root `Dockerfile`, `container/*`, or
 |-------------------------------|-----------------------------------------------------|
 | bwrap argv construction       | `.devcontainer/claude-sandbox/claude-shadow`        |
 | Installer (relocate + wire)   | `.devcontainer/claude-sandbox/install.sh`           |
-| Promote orchestrator          | `.devcontainer/claude-sandbox/promote.sh`           |
 | Root-shim installer entry     | `install`                                           |
 | bwrap argv unit tests         | `tests/bwrap_argv.sh`                               |
 | End-to-end install smoke test | `tests/smoke.sh`                                    |
-| Promote smoke test            | `tests/promote.sh`                                  |
 | CI workflow                   | `.github/workflows/ci.yml`                          |
 | Container image / launcher design | `claude-sandbox-container` skill (root `Dockerfile`, `container/*`, `.github/workflows/container.yml`) |
 | Live verification spec (why)  | `.claude/commands/verify-sandbox.md`                |
 | Phase-1 battery script (what) | `.devcontainer/claude-sandbox/verify-sandbox-battery.sh` |
 | Global SessionStart verifier  | `.devcontainer/claude-sandbox/sandbox-verify.sh`    |
 | Global UserPromptSubmit gate  | `.devcontainer/claude-sandbox/sandbox-gate.sh`      |
-| Threat model + binds rationale| [sphinx docs](https://gilesknap.github.io/claude-sandbox/explanations/threat-model.html) |
-| Recipes (promote, gh-auth, …) | `justfile` (shipped verbatim by `just promote`)     |
+| Threat model + binds rationale| [sphinx docs](https://diamondlightsource.github.io/claude-sandbox/explanations/threat-model.html) |
+| Helper CLI (gh-auth, glab-auth, update, verify, version) | `.devcontainer/claude-sandbox/claude-sandbox` |
 | Network egress / firewall / lateral-movement design | `claude-sandbox-networking` skill (kept separate so it loads only on network topics) |
 
 Touching any of these → re-read this skill first.

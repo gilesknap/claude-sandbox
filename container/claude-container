@@ -21,7 +21,7 @@
 #
 # Environment (all optional):
 #   CLAUDE_SANDBOX_IMAGE          image ref
-#                                 (default ghcr.io/gilesknap/claude-sandbox:latest)
+#                                 (default ghcr.io/diamondlightsource/claude-sandbox:latest)
 #   CLAUDE_SANDBOX_ENGINE         podman | docker (default podman)
 #   CLAUDE_SANDBOX_SHARED_CONFIG  host dir mounted at /user-terminal-config to
 #                                 persist Claude login/memory across containers
@@ -35,9 +35,9 @@ set -euo pipefail
 
 # Bump when this script meaningfully changes. CI bakes the version into
 # the image as a label, so warn_if_outdated can compare script vs image.
-VERSION="0.1.0"
+VERSION="0.1.1"
 
-IMAGE="${CLAUDE_SANDBOX_IMAGE:-ghcr.io/gilesknap/claude-sandbox:latest}"
+IMAGE="${CLAUDE_SANDBOX_IMAGE:-ghcr.io/diamondlightsource/claude-sandbox:latest}"
 ENGINE="${CLAUDE_SANDBOX_ENGINE:-podman}"
 SHARED="${CLAUDE_SANDBOX_SHARED_CONFIG:-$HOME/.config/terminal-config}"
 CONF="${CLAUDE_SANDBOX_CONF:-$HOME/.config/claude-sandbox.conf}"
@@ -56,7 +56,7 @@ usage() {
 warn_if_outdated() {
     local img_ver rev
     img_ver="$("$ENGINE" image inspect \
-        -f '{{index .Config.Labels "io.gilesknap.claude-sandbox.launcher-version"}}' \
+        -f '{{index .Config.Labels "io.diamondlightsource.claude-sandbox.launcher-version"}}' \
         "$IMAGE" 2>/dev/null)" || return 0
     { [ -n "$img_ver" ] && [ "$img_ver" != "$VERSION" ]; } || return 0
     if [ "$(printf '%s\n' "$VERSION" "$img_ver" | sort -V | head -1)" = "$VERSION" ]; then
@@ -64,7 +64,7 @@ warn_if_outdated() {
             -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' \
             "$IMAGE" 2>/dev/null)" || rev=""
         echo "claude-container: this launcher is v$VERSION; the image was built with v$img_ver. Update:" >&2
-        echo "    curl -fsSLO https://raw.githubusercontent.com/gilesknap/claude-sandbox/${rev:-main}/container/claude-container" >&2
+        echo "    curl -fsSLO https://raw.githubusercontent.com/DiamondLightSource/claude-sandbox/${rev:-main}/container/claude-container" >&2
     else
         echo "claude-container: this launcher (v$VERSION) is newer than the local image (v$img_ver);" >&2
         echo "    consider: $ENGINE pull $IMAGE  then  claude-container --recreate" >&2
@@ -173,7 +173,7 @@ create_container() {
     "$ENGINE" "${args[@]}" >/dev/null
     echo "claude-container: created container $NAME from $IMAGE" >&2
     echo "claude-container: for forge push access, run inside the container:" >&2
-    echo "    just --justfile /opt/claude-sandbox/justfile gh-auth" >&2
+    echo "    claude-sandbox gh-auth" >&2
 }
 
 if [ "$recreate" = 1 ] && container_exists; then

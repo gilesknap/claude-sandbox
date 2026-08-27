@@ -1,6 +1,6 @@
 ---
 name: claude-sandbox-container
-description: Design decisions for the published container image `ghcr.io/gilesknap/claude-sandbox` and its host-side launcher. Covers image-build-sources-install.sh (never a parallel install path), entrypoint re-runs of build-time skips, named-container PAT scoping, ro-mounted conf, tag-vs-latest publishing, notify-only launcher versioning (refuse --self-update), and parked issues #79/#80/#81. Surface before edits to the root Dockerfile, container/entrypoint.sh, container/claude-container, or .github/workflows/container.yml. Core shadow/installer invariants live in the claude-sandbox skill.
+description: Design decisions for the published container image `ghcr.io/diamondlightsource/claude-sandbox` and its host-side launcher. Covers image-build-sources-install.sh (never a parallel install path), entrypoint re-runs of build-time skips, named-container PAT scoping, ro-mounted conf, tag-vs-latest publishing, notify-only launcher versioning (refuse --self-update), and parked issues #79/#80/#81. Surface before edits to the root Dockerfile, container/entrypoint.sh, container/claude-container, or .github/workflows/container.yml. Core shadow/installer invariants live in the claude-sandbox skill.
 ---
 
 # claude-sandbox-container
@@ -13,7 +13,7 @@ on image/launcher topics.
 
 ## The image (PR #78)
 
-`ghcr.io/gilesknap/claude-sandbox` (built by `.github/workflows/container.yml`
+`ghcr.io/diamondlightsource/claude-sandbox` (built by `.github/workflows/container.yml`
 from the root Dockerfile's `claude-sandbox` stage, `FROM` the `developer`
 stage) gives non-devcontainer hosts sandboxed Claude via rootless podman + the
 `container/claude-container` launcher. Principles already extended here:
@@ -39,7 +39,7 @@ stage) gives non-devcontainer hosts sandboxed Claude via rootless podman + the
 - **Launcher versioning (notify-only, by design)**: the `VERSION=` line
   in `container/claude-container` is the single source of truth; CI seds
   it into the Dockerfile `ARG` → OCI label
-  `io.gilesknap.claude-sandbox.launcher-version`, and a CI step asserts
+  `io.diamondlightsource.claude-sandbox.launcher-version`, and a CI step asserts
   label == baked script. Each run the launcher compares itself against
   the LOCAL image's label (instant, offline, no container start) and
   prints a curl pinned to `org.opencontainers.image.revision` when
@@ -48,7 +48,10 @@ stage) gives non-devcontainer hosts sandboxed Claude via rootless podman + the
   replacing it must stay a deliberate, reviewable act), and hard-failing
   the build on an empty `LAUNCHER_VERSION` ARG (the label is advisory;
   pre-label images exist and must degrade to silence — CodeRabbit asked,
-  declined on PR #78).
+  declined on PR #78). The label key was renamed from
+  `io.gilesknap.…` in the DLS-org rebrand (2026-07-24); images built
+  before then carry only the old key, so a new launcher reads an empty
+  label and degrades to silence — expected, not a bug.
 - **Distribution/conf decisions parked as issues** (re-read before
   re-designing any of these): **#79** ship `/verify-sandbox` as a plugin
   via managed settings — docs-verified that `extraKnownMarketplaces`

@@ -6,13 +6,20 @@ variables. For task recipes see the [how-to guides](../how-to.md).
 
 ## `/etc/claude-sandbox.conf`
 
-The shadow reads this file at every launch. It is installed by
-`install.sh` from the clone's `.devcontainer/claude-sandbox.conf` and
-re-stamped on every rebuild via postCreate. It lives at `/etc`, **not**
-in the rw-bound workspace, so a compromised session cannot rewrite it
-to widen the next launch's binds — or, with `allow-ip`, its network
-reach. To change it, edit the clone conf and
-re-run `./install` (a rebuild does it via postCreate).
+The shadow reads this file at every launch. It is seeded by
+`install.sh` from the installing clone's
+`.devcontainer/claude-sandbox.conf` (the shipped defaults). It lives at
+`/etc`, **not** in the rw-bound workspace, so a compromised session
+cannot rewrite it to widen the next launch's binds — or, with
+`allow-ip`, its network reach.
+
+To change it, edit `/etc/claude-sandbox.conf` directly in the container
+(you are root); the next `claude` launch picks it up. Edits are
+per-devcontainer and not persisted: a rebuild, re-install, or
+`claude-sandbox update` restores the shipped defaults, so re-apply
+afterwards. Teams that want a persistent conf bake it in at install
+time — see
+[Sandbox a team devcontainer](../how-to/sandbox-a-team-devcontainer.md).
 
 A missing file is a no-op (`parse_config` returns). The installer
 skips placing it if the clone carries no conf. File mode is `0644`.
@@ -33,7 +40,7 @@ skips placing it if the clone carries no conf. File mode is `0644`.
 | `no-forge` | bare flag (no value) | Equivalent to `CLAUDE_SANDBOX_NO_FORGE=1`: skips the `gh`/`glab` token binds and removes the credential helpers from the generated gitconfig |
 | `allow-write` | absolute path | Adds an extra writable bind. Repeatable — each `allow-write` line appends one path. Empty values skipped; non-existent paths are skipped at bind time |
 | `pass-env` | variable name(s) | Forwards named environment variables through the `--clearenv` scrub. Comma- or space-separated, and repeatable. Names only — the value is read from the launching environment. Unset, non-identifier and denied names are skipped |
-| `egress-jail` | `0` to disable; bare flag / `1` reaffirms on | The per-process network egress jail ({ref}`adr-network-egress-jail`) is **ON by default**; this key only needs to appear to **turn it off** on a host: `egress-jail = 0` (restores {ref}`adr-network-egress-open`'s shared-host-netns, no-firewall behaviour). A bare `egress-jail` reaffirms on. `CLAUDE_SANDBOX_EGRESS_JAIL` in the environment takes precedence over this key |
+| `egress-jail` | bare flag / `1` reaffirms on | The per-process network egress jail ({ref}`adr-network-egress-jail`) is **ON by default** and fail-closed; the key normally never needs to appear. An operator opt-out value exists but is deliberately not documented here — weakening the sandbox is discouraged. `CLAUDE_SANDBOX_EGRESS_JAIL` in the environment takes precedence over this key |
 | `allow-ip` | bare IP (no CIDR) | A device IP the egress jail keeps reachable past its RFC1918 blackhole (e.g. an EPICS IOC / PMAC / internal GitLab by bare address). Repeatable — each line punches one `/32` route via the gateway. Lives in `/etc`, not the workspace, so a compromised session cannot widen its own network reach. No effect when the jail is disabled |
 
 ```ini
@@ -42,8 +49,6 @@ allow-write = /cache
 allow-write = /workspaces/sibling-project
 pass-env = DOCKER_HOST
 
-# Egress jail is ON by default; uncomment to disable on this host.
-# egress-jail = 0
 # Keep these device IPs reachable past the RFC1918 blackhole (bare IP):
 allow-ip = 172.23.142.119  # internal GitLab
 ```
@@ -67,8 +72,8 @@ installer sources.
 |---|---|---|
 | `CLAUDE_SANDBOX_WORKSPACE_ROOT` | you (`remoteEnv`) → shadow | Explicit rw bind-mount root. Set to `/workspaces` to restore the old broad bind; any absolute path for a custom root. Default when unset: `$PWD` |
 | `CLAUDE_SANDBOX_NO_FORGE` | you (`remoteEnv`) → shadow | `1` skips the `gh`/`glab` token binds and drops the credential helpers from the generated gitconfig, so `git push` fails inside the sandbox by design |
-| `ALLOW_UNWRAPPED` | you → `install.sh` (install-time) | `1` stamps the root-owned gate escape-hatch flag `/etc/claude-code/allow-unwrapped`; unset/`0` leaves the gate fail-closed and removes a stale flag. Replaces the retired `CLAUDE_SANDBOX_ALLOW_UNWRAPPED` env hatch, which a confined Claude could forge via `~/.claude/settings.json` (deep-review H4) |
-| `CLAUDE_SANDBOX_EGRESS_JAIL` | you (env, per session) / conf `egress-jail` → shadow | Network egress jail toggle ({ref}`adr-network-egress-jail`). Default **ON**; set to `0` to launch without the jail (restores the shared host netns, no per-process firewall, per {ref}`adr-network-egress-open`). Env value wins over the `egress-jail` conf key. The jail is fail-closed: with it on but `/dev/net/tun` / pasta / `unshare` missing, `claude` refuses to launch and the error names this escape hatch |
+| `DANGEROUSLY_ALLOW_CLAUDE_SANDBOX_UNWRAPPED` | you → `install.sh` (install-time) | `1` stamps the root-owned gate escape-hatch flag `/etc/claude-code/allow-unwrapped` (downgrades the unwrapped-launch gate to warn-only; weakening the sandbox is discouraged); unset/`0` leaves the gate fail-closed and removes a stale flag. Replaces the retired `CLAUDE_SANDBOX_ALLOW_UNWRAPPED` env hatch, which a confined Claude could forge via `~/.claude/settings.json` (deep-review H4) |
+| `CLAUDE_SANDBOX_EGRESS_JAIL` | you (env, per session) / conf `egress-jail` → shadow | Network egress jail toggle ({ref}`adr-network-egress-jail`). Default **ON**, fail-closed: with the jail on but `/dev/net/tun` / pasta / `unshare` missing, `claude` refuses to launch. An operator opt-out value exists but is deliberately not documented — weakening the sandbox is discouraged. Env value wins over the `egress-jail` conf key |
 | `CLAUDE_SANDBOX_ALLOW_IP` | populated by `parse_config` from `allow-ip` lines | Newline-separated device IPs the jail keeps reachable past the RFC1918 blackhole |
 | `IS_SANDBOX` | set by bwrap (`--setenv IS_SANDBOX 1`) | Sentinel proving the sandbox was entered. The shadow's recursion guard falls through to the real binary when it is `1`; the gate blocks every prompt unless it is `1` |
 | `CLAUDE_SANDBOX_ALLOW_WRITE` | populated by `parse_config` from `allow-write` lines | Newline-separated extra writable paths bound in addition to the workspace |
@@ -87,17 +92,13 @@ forwarding variables is covered in
 
 The `UserPromptSubmit` gate ([integrity guard](../explanations/integrity-guard.md))
 is fail-closed: it blocks every prompt unless Claude is inside the bwrap
-shadow (`IS_SANDBOX=1`). To allow working **unwrapped**, the operator
-creates a root-owned flag file:
-
-```console
-sudo touch /etc/claude-code/allow-unwrapped   # downgrade gate to warn-only
-sudo rm   /etc/claude-code/allow-unwrapped    # restore fail-closed
-```
-
-or runs `ALLOW_UNWRAPPED=1 ./install` (a later `./install` without that
-variable removes the flag again). The `SessionStart` warning still fires —
-unwrapped is allowed, never silent.
+shadow (`IS_SANDBOX=1`). A root-owned flag file at this path downgrades
+the gate to warn-only. It exists for operators who need a deliberate,
+root-gated exception; how to manage it is documented for IT/platform
+teams in
+[Enforce sandbox use across an organisation](../how-to/enforce-org-wide.md),
+not here. When the flag is present the `SessionStart` warning still
+fires: unwrapped is allowed, never silent.
 
 It is deliberately a flag under `/etc`, **not** an environment variable:
 `/etc` is root-owned, read-only inside the sandbox (`--ro-bind / /`), and

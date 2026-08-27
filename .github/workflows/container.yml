@@ -69,6 +69,7 @@ jobs:
           tags: claude-sandbox:test
           build-args: |
             LAUNCHER_VERSION=${{ env.LAUNCHER_VERSION }}
+            CLAUDE_SANDBOX_VERSION=${{ github.ref_name }}
 
       - name: "Test: baked install is complete"
         run: |
@@ -90,7 +91,7 @@ jobs:
       - name: "Test: launcher-version label matches the baked script"
         run: |
           label="$(docker image inspect \
-            -f '{{index .Config.Labels "io.gilesknap.claude-sandbox.launcher-version"}}' \
+            -f '{{index .Config.Labels "io.diamondlightsource.claude-sandbox.launcher-version"}}' \
             claude-sandbox:test)"
           baked="$(docker run --rm --entrypoint sed claude-sandbox:test \
             -n 's/^VERSION="\(.*\)"$/\1/p' \
@@ -152,6 +153,7 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             LAUNCHER_VERSION=${{ env.LAUNCHER_VERSION }}
+            CLAUDE_SANDBOX_VERSION=${{ github.ref_name }}
           outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
 
       - name: Export digest

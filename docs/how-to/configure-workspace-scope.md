@@ -19,11 +19,11 @@ Restart (or rebuild) the devcontainer for the change to take effect.
 ## Add specific writable paths
 
 For extra writable paths without widening to all of `/workspaces`, add
-`allow-write` lines to the sandbox config. Edit it in the clone at
-`.devcontainer/claude-sandbox.conf`:
+`allow-write` lines to the sandbox config — edit `/etc/claude-sandbox.conf`
+in the container (you are root in a devcontainer):
 
 ```ini
-# .devcontainer/claude-sandbox.conf  (installed to /etc/claude-sandbox.conf)
+# /etc/claude-sandbox.conf
 allow-write = /cache
 allow-write = /workspaces/sibling-project
 ```
@@ -81,8 +81,8 @@ socket itself rather than lifting the mask off the whole directory:
 allow-write = /run/user/1000/podman/podman.sock
 ```
 
-Use the uid of the account running the engine (`id -u`). Since the conf is
-host-global, a hardcoded uid is fine — it describes one machine.
+Use the uid of the account running the engine (`id -u`). Since the conf
+describes one container, a hardcoded uid is fine.
 
 What must **not** go on that line is the path where your devcontainer
 mounts the *host's* engine socket — a common `devcontainer.json` pattern
@@ -105,19 +105,22 @@ The engine socket is a unix socket, not a network connection, so the
 
 ## Applying the change
 
-`install.sh` copies the clone's `.devcontainer/claude-sandbox.conf` to the
-host-global `/etc/claude-sandbox.conf`, which the shadow reads at launch.
-After editing the conf, either:
+The shadow reads `/etc/claude-sandbox.conf` at every launch, so an edit
+takes effect on the next `claude` — no re-install needed.
 
-- re-run `./install`, or
-- rebuild the devcontainer (postCreate re-stamps the conf).
+Edits are **per-devcontainer and not persisted**: a container rebuild
+recreates `/etc` from the image, and a re-install or `claude-sandbox
+update` re-stamps the conf with the shipped defaults — re-apply your
+lines afterwards. (Teams that want a persistent, reviewable conf bake it
+in at install time instead — see
+[Sandbox a team devcontainer](sandbox-a-team-devcontainer.md).)
 
 ## Why the conf lives in `/etc`, not the workspace
 
 The config is read from `/etc/claude-sandbox.conf` rather than from the
 rw-bound workspace so that a compromised in-session Claude cannot rewrite
-it to widen the next launch's binds. The clone's
-`.devcontainer/claude-sandbox.conf` is the editable source; `/etc` is the
-authoritative copy the shadow trusts. See the
+it to widen the next launch's binds — `/etc` is not writable from inside
+the sandbox, so editing it requires an unsandboxed root shell like your
+container terminal. See the
 [threat model](../explanations/threat-model.md) for why the
 workspace itself is not a trusted location.

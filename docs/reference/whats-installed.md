@@ -20,6 +20,8 @@ message naming the fix.
 |---|---|---|
 | `/usr/libexec/claude-sandbox/claude` | Anthropic installer (`curl -fsSL https://claude.ai/install.sh \| bash`), relocated | The real Claude binary, kept off the user's PATH so the shadow always wins |
 | `/usr/local/bin/claude` | `.devcontainer/claude-sandbox/claude-shadow` (verbatim) | Shadow that wraps the real binary in `bwrap`. Falls through to the real binary when `IS_SANDBOX=1` so internal `claude` invocations from a hook don't recurse |
+| `/usr/local/bin/claude-sandbox` | `.devcontainer/claude-sandbox/claude-sandbox` (verbatim) | Helper CLI (`gh-auth`, `glab-auth`, `update`, `verify`, `version`) — on PATH so it works after the install clone is deleted |
+| `/usr/libexec/claude-sandbox/version` | Stamped by `install.sh` (`git describe` on the installing clone, or the `CLAUDE_SANDBOX_VERSION` build arg) | What `claude-sandbox version` reports. Normally a release tag: `install` checks the newest one out before installing, as does `claude-sandbox update`. A commit hash means the revision was chosen deliberately — `install --here` on a branch or working tree, or a team pin (see [Sandbox a team devcontainer](../how-to/sandbox-a-team-devcontainer.md)) |
 | `/etc/claude-gitconfig` | Generated | Curated gitconfig — regenerated from `git config --get user.{name,email}` on every shadow launch |
 | `/usr/libexec/claude-sandbox/sandbox-verify.sh` | `.devcontainer/claude-sandbox/sandbox-verify.sh` | `SessionStart` guard script — full integrity battery + loud warn when unwrapped. Off-PATH, root-owned, ro inside the sandbox |
 | `/usr/libexec/claude-sandbox/sandbox-gate.sh` | `.devcontainer/claude-sandbox/sandbox-gate.sh` | `UserPromptSubmit` guard script — sub-second fail-closed gate (`IS_SANDBOX=1` or block). Same protections |
@@ -29,7 +31,8 @@ message naming the fix.
 Disabling the auto-updater is root-cause removal: Claude Code's updater
 otherwise re-creates `~/.local/bin/claude` on a version bump, which can
 launch the real binary unwrapped and self-entrench. With the updater
-off, updates happen only via a deliberate `./install`, which
+off, updates happen only via a deliberate re-install (`claude-sandbox
+update`, or re-running `install` from a fresh clone), which
 re-relocates the current binary and re-asserts the shadow. See the
 [shadow-on-PATH explanation](../explanations/integrity-guard.md).
 

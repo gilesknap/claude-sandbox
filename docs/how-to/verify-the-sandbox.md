@@ -8,19 +8,28 @@ bwrap isolation, and that no defence has regressed.
 
 ## Run the verification
 
-From inside a Claude session:
+From a terminal, in any workspace, *outside* a Claude session:
+
+```bash
+claude-sandbox verify
+```
+
+That launches a sandboxed session, runs the checks against the live
+process, and prints a summary table.
+
+Inside a claude-sandbox clone it runs the full two-phase audit; anywhere
+else it runs the phase-1 battery. To drive the full audit yourself from
+within a Claude session in a clone:
 
 ```bash
 /verify-sandbox
 ```
 
-This runs against the live process and prints a summary table.
-
 ## What it does
 
 There are two phases:
 
-1. **The PASS/FAIL battery** — 18 checks against the running process,
+1. **The PASS/FAIL battery** — 20 checks against the running process,
    one per defence (sandbox entered, capabilities dropped, namespaces
    unshared, IPC/secrets/runtime dirs masked, curated gitconfig in
    effect, and so on).
@@ -34,12 +43,12 @@ The full spec lives at `.claude/commands/verify-sandbox.md`.
 - Every line of the battery should report `PASS`.
 - Any `FAIL` line names the specific defence that regressed.
 - Probes may report `[INCONCLUSIVE]` for accepted information-disclosure
-  paths (e.g. network-identity disclosure, which applies in the
-  `CLAUDE_SANDBOX_EGRESS_JAIL=0` open-egress mode) — these are on the
-  radar by design, not failures.
+  paths (e.g. network-identity disclosure, which applies only when an
+  operator has disabled the egress jail) — these are on the radar by
+  design, not failures.
 
 > **Jailed sessions.** When the egress jail is on (the default), the full
-> 18-check battery still passes: check 06 asserts the *effective*
+> 20-check battery still passes: check 06 asserts the *effective*
 > capability set (`CapEff=0`), which bwrap's `--cap-drop ALL` empties even
 > inside the jail's nested user namespace. The `CapBnd` *ceiling* will
 > read full (`…1ffffffffff`) rather than `0` — a nested-userns artifact,
@@ -58,5 +67,5 @@ if the sandbox ever regresses.
   list of checks and what each one proves.
 - [The integrity guard](../explanations/integrity-guard.md) — the
   always-on guard that re-runs the integrity subset every session and
-  blocks prompts when Claude is unwrapped, so you do not have to run
-  `/verify-sandbox` by hand to stay protected.
+  blocks prompts when Claude is unwrapped, so you do not have to verify
+  by hand to stay protected.

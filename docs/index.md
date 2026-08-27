@@ -62,3 +62,15 @@ explanations
 :::
 
 ::::
+
+## Using Claude Code at Diamond Light Source
+
+DLS developers: start at [Claude Code at DLS](dls/claude-at-dls.md) — the
+one-page policy summary and getting-started instructions.
+
+```{toctree}
+:maxdepth: 1
+:hidden:
+
+dls
+```

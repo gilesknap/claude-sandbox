@@ -1,7 +1,7 @@
 # Verification checks
 
 `/verify-sandbox` runs two phases against the live Claude process: a
-deterministic **18-check PASS/FAIL battery**, then — only when all 18
+deterministic **20-check PASS/FAIL battery**, then — only when all 20
 pass — **10 adversarial breakout probes**. Any FAIL in phase 1, or any
 `[ESCAPED]` probe in phase 2, exits the command non-zero, so it is
 usable as a CI assertion.
@@ -9,21 +9,23 @@ usable as a CI assertion.
 ```{include} ../_snippets/clone-note.md
 ```
 
-The exact bash for each check lives in the spec at
-`.claude/commands/verify-sandbox.md` in the repo. The summaries below
-state what each check asserts; see
+The exact bash for each check is the committed battery script
+`.devcontainer/claude-sandbox/verify-sandbox-battery.sh` (installed to
+`/usr/libexec/claude-sandbox/`, so it is read-only inside the sandbox);
+the *why* of each check lives in the spec at
+`.claude/commands/verify-sandbox.md`. The summaries below state what
+each check asserts; see
 [locked-down defences](locked-down-defences.md) for the
 defence → primitive mapping.
 
-The battery is jail-agnostic: it passes unchanged whether or not the
+The battery passes whether or not the
 {ref}`egress jail <adr-network-egress-jail>` is active (the jail is on
-by default). No jail-aware variant is needed — the capability check
-asserts the *effective* set, which stays empty inside the jail's nested
-userns. An additional check that the netns exists and the RFC1918
-blackhole holds is a future/optional item (see ADR 0015 consequences),
-not yet part of the 18.
+by default): the capability check asserts the *effective* set, which
+stays empty inside the jail's nested userns, and the two jail checks
+(19–20) treat a deliberately disabled jail as a pass with a
+"disabled" note rather than a failure.
 
-## Phase 1 — the 18-check battery
+## Phase 1 — the 20-check battery
 
 | # | Asserts |
 |---|---|
@@ -45,6 +47,8 @@ not yet part of the 18.
 | 16 | `GIT_CONFIG_GLOBAL=/etc/claude-gitconfig` is exported and `git config --get user.email` returns a value (curated gitconfig active). |
 | 17 | Workspace is scoped to `$PWD`, not a broad rw `/workspaces` bind, unless `CLAUDE_SANDBOX_WORKSPACE_ROOT=/workspaces` is the explicit opt-in. |
 | 18 | The installed shadow pins `CONFIG_PATH="/etc/claude-sandbox.conf"` and feeds it to `parse_config`, with no `parse_config` call reading from `.devcontainer` (config read from `/etc`, not the attacker-writable workspace). |
+| 19 | Egress jail active: the netns routing table carries the full blackhole set (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, CGNAT `100.64.0.0/10`) plus a default route — or the jail is deliberately disabled (pass with a "disabled" note; partial programming is a FAIL). |
+| 20 | Behavioural counterpart to 19: representative non-allow-listed RFC1918/CGNAT addresses (and the connected subnet's base) get no forwardable route, while the gateway stays routable. Disabled jail ⇒ nothing to assert (pass). |
 
 On any FAIL the command exits non-zero, names the regressed defence on
 the FAIL line, and **skips phase 2 entirely**.
@@ -60,7 +64,7 @@ jail-aware variant of `/verify-sandbox` is needed.
 
 ## Phase 2 — adversarial breakout probes
 
-Runs only when all 18 checks pass. The command reasons up **10 novel
+Runs only when all 20 checks pass. The command reasons up **10 novel
 breakout attempts** aimed at gaps the deterministic matrix does not
 directly exercise — escaping the filesystem inversion, recovering
 scrubbed env vars, reaching the host's network identity, signalling or

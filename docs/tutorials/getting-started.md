@@ -1,18 +1,29 @@
 # Getting started
 
-This tutorial gets you to a working, sandboxed Claude Code — and proves the
-sandbox is intact before you trust it. You'll be working inside a
+This tutorial gets you to a working, sandboxed Claude Code. You'll be
+working inside a
 Debian/Ubuntu [devcontainer](set-up-a-devcontainer.md) running as `root`
 (the typical rootless-Podman pattern; rootless Docker likely works but is
-untested with the egress jail). New to
-devcontainers? [Set one up first](set-up-a-devcontainer.md).
+untested with the egress jail).
 
-There are two ways in. Pick whichever fits how you already work.
+There are two ways in. **New to devcontainers? Take the quick way** — this
+repo ships its own devcontainer, so there is nothing to build or configure
+yourself. The other way is for when you already work inside your own
+project's devcontainer (and if your project doesn't have one yet,
+[set one up first](set-up-a-devcontainer.md)).
 
 ## The quick way: use claude-sandbox's own devcontainer
 
-Open **this repo** (`claude-sandbox`) in its devcontainer. That's it — the
-sandbox installs itself:
+Clone **this repo** and open it in VS Code:
+
+```bash
+git clone https://github.com/DiamondLightSource/claude-sandbox
+code claude-sandbox
+```
+
+When VS Code offers **"Reopen in Container"**, accept it (or press `F1` and
+run **"Dev Containers: Reopen in Container"**). That's it — the sandbox
+installs itself:
 
 - `postCreate` runs the installer for you, so the shadow `claude` and the
   global integrity guard are in place the moment the container comes up.
@@ -40,36 +51,33 @@ others stay read-only — usually exactly what you want. (To widen it, see
 [Configure the workspace scope](../how-to/configure-workspace-scope.md).)
 
 This is the simplest path, especially if your own projects don't have
-devcontainers. Skip to [Confirm the sandbox](#confirm-the-sandbox) to prove
-it's working.
+devcontainers.
 
-## The other way: add the sandbox beside your own project
+## The other way: install into your own devcontainer
 
-Already working inside your own project's devcontainer? Add claude-sandbox
-next to it.
+Already working inside your own project's devcontainer? Install
+claude-sandbox into it.
 
-### 1. Clone beside your project
+### 1. Clone and install
 
-Clone it as a **sibling** of your project — not inside it — so it lives on
-the host, survives container rebuilds, and one clone sandboxes every project
-beside it:
+In a terminal inside the container:
 
 ```bash
-cd ..        # the host-mounted parent of your project
-git clone https://github.com/gilesknap/claude-sandbox.git
-cd claude-sandbox
+cd /tmp && rm -rf claude-sandbox && git clone https://github.com/DiamondLightSource/claude-sandbox && claude-sandbox/install
 ```
 
-(This assumes your project's parent directory is mounted, as it is for
-`python-copier-template` and most DLS devcontainers.)
+This installs the **newest release**, not the tip of `main`: the clone
+lands on the default branch, and `install` then checks out the newest
+release tag before installing it — the same revision `claude-sandbox
+update` would give you. It prints which one it picked. (To install a
+specific release instead: `claude-sandbox/install --release 3.0.0`.)
 
-### 2. Run the installer
+The clone is **disposable** — nothing depends on it after install (the
+`claude-sandbox` helper CLI lands on your PATH, and
+`claude-sandbox update` fetches its own fresh clone when you upgrade), so
+`/tmp` is exactly the right place: it evaporates with the container.
 
-```bash
-./install
-```
-
-This relocates the real Claude binary off your `PATH` and drops a shadow
+The installer relocates the real Claude binary off your `PATH` and drops a shadow
 `claude` in its place that wraps every invocation in `bwrap`. It also
 installs the global integrity guard and a curated gitconfig. Curious where
 everything lands? See [What's installed](../reference/whats-installed.md).
@@ -88,14 +96,15 @@ non-functional sandbox. Fix the reported problem and re-run.
 > `passt` (which provides `pasta`), but it **cannot** add the runArg for you
 > — that's a `devcontainer.json` edit. Add `"--device=/dev/net/tun"` to your
 > `devcontainer.json` `runArgs` and rebuild (this repo's own devcontainer
-> already does). If you don't need lateral isolation, set
-> `CLAUDE_SANDBOX_EGRESS_JAIL=0` to turn the jail off instead. See [Configure
-> the network egress jail](../how-to/network-egress-jail.md).
+> already does). See [Configure the network egress
+> jail](../how-to/network-egress-jail.md).
 
-To restore the sandbox automatically on every rebuild, wire `bash
-<clone>/install` into your devcontainer's `postCreate.sh`.
+To restore the sandbox automatically on every rebuild, wire the same
+clone-and-install one-liner into your devcontainer's `postCreate.sh`
+(pin a tag there if you want a reviewable rollout — see [Sandbox a team
+devcontainer](../how-to/sandbox-a-team-devcontainer.md)).
 
-### 3. Run Claude
+### 2. Run Claude
 
 ```bash
 claude
@@ -104,52 +113,37 @@ claude
 Use Claude exactly as you normally would — the shadow on your `$PATH` wraps
 plain `claude` in the sandbox, nothing else to remember.
 
-## Confirm the sandbox
-
-From inside the Claude session, run:
-
-```
-/verify-sandbox
-```
-
-This runs the **18-check PASS/FAIL battery**, and — when the battery
-passes — follows it with **10 adversarial breakout probes** against the
-live process. It **exits non-zero on any FAIL**, so the same command
-doubles as a CI assertion.
-
-A clean run means your host credentials, IDE bridges, and shell environment
-are isolated from anything Claude reads or runs. If you see a FAIL, stop and
-resolve it before trusting the session.
-
 ## Re-run freely after a rebuild
 
-The installer is idempotent. After a devcontainer rebuild, just run it again
-(or let `postCreate` do it):
-
-```bash
-./install
-```
+The installer is idempotent. After a devcontainer rebuild, just run the
+clone-and-install one-liner again (or let `postCreate` do it). Once
+installed, `claude-sandbox update` upgrades you to the latest release and
+`claude-sandbox version` reports what you have.
 
 The shadow is re-established **without re-downloading Claude**.
 
 Your statusline script is seeded once and then left alone, so edits you make
 to it survive re-runs. If you'd rather a re-run pull the clone's current
-statusline, run `STATUS=1 ./install`.
+statusline, run `STATUS=1 <clone>/install --here` (`--here` because the
+clone is now checked out at the release it installed, and re-running
+without it would ask to move to a newer one).
 
 ---
 
-> **Note:** `just promote` (copying the sandbox's commands into a workspace
-> so they're available in place) still exists, but the sibling clone above
-> covers the common case and is the recommended workflow. See [Promote a
-> workspace](../how-to/promote-to-a-workspace.md) only if you need it.
+> **Note:** rolling the sandbox out to a whole team? Wire the clone-and-install
+> into your project's `postCreate` at a pinned tag — see [Sandbox a team
+> devcontainer](../how-to/sandbox-a-team-devcontainer.md).
 
 ## Next steps
 
+- [Verify the sandbox](../how-to/verify-the-sandbox.md) — the sandbox ships
+  with an integrity battery and adversarial breakout probes; run them any
+  time you want proof, or wire them into CI.
 - [Persist your login and memory across rebuilds](../how-to/persist-login-and-memory.md)
   — add a terminal-config mount if your devcontainer doesn't already have one.
 - [Configure the network egress jail](../how-to/network-egress-jail.md) —
-  the jail is on by default; add `allow-ip` lab devices, satisfy the
-  `--device=/dev/net/tun` requirement, or turn it off. It provides
+  the jail is on by default; add `allow-ip` lab devices or satisfy the
+  `--device=/dev/net/tun` requirement. It provides
   *lateral* (RFC1918) isolation and composes with Claude Code's native
   `allowedDomains` *internet-domain* isolation as complementary layers — run
   both.

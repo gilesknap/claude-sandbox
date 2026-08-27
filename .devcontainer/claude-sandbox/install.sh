@@ -20,7 +20,8 @@
 #   STATUS=1                         force-overwrite the user-scope
 #                                    statusline script from the clone's
 #                                    copy, instead of seed-only-if-absent.
-#   ALLOW_UNWRAPPED=1                stamp the ROOT-OWNED gate escape-hatch
+#   DANGEROUSLY_ALLOW_CLAUDE_SANDBOX_UNWRAPPED=1
+#                                    stamp the ROOT-OWNED gate escape-hatch
 #                                    flag (/etc/claude-code/allow-unwrapped)
 #                                    so the UserPromptSubmit gate downgrades
 #                                    to warn-only. The OPERATOR's switch for
@@ -39,7 +40,7 @@ WORKSPACE="${INSTALL_WORKSPACE:-$PWD}"
 USER_HOME="${INSTALL_USER_HOME:-$HOME}"
 SMOKE="${CLAUDE_SANDBOX_SMOKE:-0}"
 FORCE_STATUSLINE="${STATUS:-0}"
-ALLOW_UNWRAPPED="${ALLOW_UNWRAPPED:-0}"
+ALLOW_UNWRAPPED="${DANGEROUSLY_ALLOW_CLAUDE_SANDBOX_UNWRAPPED:-0}"
 
 # Resolve a target under $PREFIX. Stripping the leading slash lets us
 # compose relative-to-prefix paths cleanly without a `//` between root
@@ -78,7 +79,7 @@ apt_install() {
     # devcontainer.json runArg this installer cannot add (see claude-shadow's
     # netns_launch error message and claude-sandbox.conf).
     apt-get install -y -qq --no-install-recommends \
-        bubblewrap just jq curl ca-certificates git nodejs gh passt
+        bubblewrap jq curl ca-certificates git nodejs gh passt
     # glab isn't in every Ubuntu repo; install-try.
     apt-get install -y -qq --no-install-recommends glab 2>/dev/null || true
 }
@@ -170,8 +171,8 @@ ensure_cred_dirs() {
 # install_conf: place the clone's claude-sandbox.conf at the host-global
 # /etc/claude-sandbox.conf the shadow reads at launch. Re-run on every
 # rebuild (via postCreate) so the /etc copy tracks the clone's conf.
-# Unlike install_file this is skip-if-absent: a promoted target that
-# carries no conf, or a clone without one, simply gets no global config
+# Unlike install_file this is skip-if-absent: a clone that carries no
+# conf simply gets no global config
 # (parse_config then no-ops). Mode 0644 — it's data, not an executable.
 # cmp -s short-circuits so a re-run with unchanged content is a no-op.
 install_conf() {
@@ -184,6 +185,25 @@ install_conf() {
         return 0
     fi
     install -m 0644 "$src" "$dst"
+}
+
+# stamp_version: record what this clone is at install time, for
+# `claude-sandbox version`. A tagged checkout stamps the tag (git
+# describe on a tag == the tag, which is what `claude-sandbox update`
+# installs); an unpinned main clone stamps a commit hash — honest
+# "unreleased" reporting. CLAUDE_SANDBOX_VERSION overrides for builds
+# with no .git (the container image). Deterministic per clone, so the
+# byte-stable re-run property holds.
+stamp_version() {
+    local ver dst
+    dst="$(prefixed "$VERSION_FILE_PATH")"
+    ver="${CLAUDE_SANDBOX_VERSION:-$(git -C "$REPO_ROOT" describe --tags --always --dirty 2>/dev/null || echo unknown)}"
+    mkdir -p "$(dirname "$dst")"
+    if [ -f "$dst" ] && [ "$(cat "$dst")" = "$ver" ]; then
+        return 0
+    fi
+    printf '%s\n' "$ver" > "$dst"
+    chmod 0644 "$dst"
 }
 
 # _is_mount PATH — true if PATH is itself a mount target. Compares the
@@ -229,7 +249,7 @@ _ensure_shared() {
 # symlink into the shared config store, picking the data-preserving
 # action for whatever TARGET currently is. The old create-if-absent
 # guard silently lost the share whenever TARGET already existed — and in
-# a not-yet-promoted devcontainer (install not in postCreate) an
+# a devcontainer that doesn't run install from postCreate an
 # unsandboxed `claude` or the VS Code extension routinely writes a local
 # ~/.claude before install ever runs, permanently shadowing the share.
 # Cases:
@@ -320,6 +340,10 @@ GATE_PATH="$GUARD_LIBEXEC/sandbox-gate.sh"
 # a broken sandbox. It is NOT a hook (not wired into managed-settings); the
 # /verify-sandbox command runs it by absolute path for the live battery.
 BATTERY_PATH="$GUARD_LIBEXEC/verify-sandbox-battery.sh"
+# Version record for `claude-sandbox version` — data, not a script, but
+# it lives with the guard scripts (root-owned, ro in the sandbox) so a
+# compromised session can't spoof what "version" reports.
+VERSION_FILE_PATH="$GUARD_LIBEXEC/version"
 VERIFY_CMD="bash $VERIFY_PATH"
 GATE_CMD="bash $GATE_PATH"
 MANAGED_SETTINGS="/etc/claude-code/managed-settings.json"
@@ -341,13 +365,13 @@ install_guard_scripts() {
     install_file "$SCRIPT_DIR/verify-sandbox-battery.sh"  "$(prefixed "$BATTERY_PATH")"
 }
 
-# wire_gate_flag: stamp (ALLOW_UNWRAPPED=1) or remove the ROOT-OWNED gate
+# wire_gate_flag: stamp (DANGEROUSLY_ALLOW_CLAUDE_SANDBOX_UNWRAPPED=1) or remove the ROOT-OWNED gate
 # escape-hatch flag the UserPromptSubmit gate checks. The flag REPLACES the
 # old CLAUDE_SANDBOX_ALLOW_UNWRAPPED env hatch, which a confined Claude could
 # forge by writing ~/.claude/settings.json's "env" block (deep-review H4).
 # Living under /etc — root-owned, ro inside the sandbox, NOT host-shared —
 # the flag can only be created by the operator (or a deliberate ./install),
-# never from inside the jail. State is fully driven by ALLOW_UNWRAPPED so a
+# never from inside the jail. State is fully driven by the env seam so a
 # re-install with it unset removes a previously-stamped flag (fail-closed
 # default restored). Mode 0644 — it's a presence marker; only existence
 # matters.
@@ -357,7 +381,7 @@ wire_gate_flag() {
         mkdir -p "$(dirname "$flag")"
         : > "$flag"
         chmod 0644 "$flag"
-        echo "claude-sandbox: WARNING — gate escape hatch ENABLED ($flag); the UserPromptSubmit gate is warn-only, unwrapped claude is permitted. Re-run install with ALLOW_UNWRAPPED unset to restore fail-closed." >&2
+        echo "claude-sandbox: WARNING — gate escape hatch ENABLED ($flag); the UserPromptSubmit gate is warn-only, unwrapped claude is permitted. Re-run install with DANGEROUSLY_ALLOW_CLAUDE_SANDBOX_UNWRAPPED unset to restore fail-closed." >&2
     else
         rm -f "$flag"
     fi
@@ -458,7 +482,7 @@ wire_user_statusline() {
     merged="$(printf '%s' "$input" | jq --arg sl "$USER_SL_CMD" --argjson slp "$sl_present" "$prune_program")"
 
     # Don't create an empty {} settings on a fresh home that has no
-    # statusline source to wire (e.g. a promoted target).
+    # statusline source to wire.
     if [ "$had_file" = false ] && printf '%s' "$merged" | jq -e '. == {}' >/dev/null 2>&1; then
         return 0
     fi
@@ -477,12 +501,16 @@ main() {
     # the shadow itself transiently fails because bwrap or the real
     # binary haven't landed yet.
     install_file "$SCRIPT_DIR/claude-shadow" "$(prefixed /usr/local/bin/claude)"
+    # The helper CLI (gh-auth, glab-auth, update, verify, version) —
+    # on PATH so it works after the install clone is deleted.
+    install_file "$SCRIPT_DIR/claude-sandbox" "$(prefixed /usr/local/bin/claude-sandbox)"
     apt_install
     probe_userns_or_refuse
     link_terminal_config
     install_claude_binary
     ensure_cred_dirs
     install_conf
+    stamp_version
     # GLOBAL integrity guard via the MANAGED settings layer: scripts off
     # the rw set in /usr/libexec, hook entries + updater-disable in
     # /etc/claude-code/managed-settings.json (highest precedence, not
@@ -496,6 +524,7 @@ main() {
 
     echo "claude-sandbox: install complete."
     echo "  shadow:      $(prefixed /usr/local/bin/claude)"
+    echo "  cli:         $(prefixed /usr/local/bin/claude-sandbox) ($(cat "$(prefixed "$VERSION_FILE_PATH")"))"
     echo "  real claude: $(prefixed /usr/libexec/claude-sandbox/claude)"
     echo "  config:      $(prefixed /etc/claude-sandbox.conf)"
     echo "  guard:       $(prefixed "$VERIFY_PATH"), $(prefixed "$GATE_PATH") (off-PATH, ro in sandbox)"
@@ -504,12 +533,12 @@ main() {
     echo "  gate hatch:  $(prefixed "$GATE_FLAG_PATH") $([ "$ALLOW_UNWRAPPED" = "1" ] && echo 'PRESENT — gate warn-only (unwrapped permitted)' || echo 'absent — gate fail-closed')"
     echo "  statusline:  $USER_HOME/.claude/settings.json (preference only)"
     echo "  workspace:   $WORKSPACE"
-    echo "  run \`/verify-sandbox\` inside Claude for the live battery."
+    echo "  run \`claude-sandbox verify\` for the live battery (or \`/verify-sandbox\` inside Claude in a claude-sandbox clone for the full audit)."
 }
 
-# Source guard: `promote.sh` re-uses `install_file` (and friends) by
-# sourcing this file. The guard keeps main() from auto-running in that
-# case.
+# Source guard: the container image build (see Dockerfile) re-uses the
+# install functions by sourcing this file. The guard keeps main() from
+# auto-running in that case.
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     main "$@"
 fi

@@ -64,6 +64,47 @@ else
     fail "shadow does not start with #!/usr/bin/env bash"
 fi
 
+# Helper CLI placement: on PATH, executable, bash shebang — the shipped
+# command surface (gh-auth, glab-auth, update, verify, version) that
+# survives deletion of the install clone.
+CLI_DEST="$PREFIX/usr/local/bin/claude-sandbox"
+if [ -x "$CLI_DEST" ] && [ "$(stat -c '%a' "$CLI_DEST" 2>/dev/null)" = "755" ]; then
+    pass
+else
+    fail "helper CLI missing or not 0755-executable at $CLI_DEST"
+fi
+if head -1 "$CLI_DEST" | grep -qxF '#!/usr/bin/env bash'; then
+    pass
+else
+    fail "helper CLI does not start with #!/usr/bin/env bash"
+fi
+
+# CLI behaviour: help exits 0 and prints usage; unknown subcommand exits 2;
+# version reports the stamped value via the test seam.
+if bash "$CLI_DEST" help 2>/dev/null | grep -q '^Usage:'; then
+    pass
+else
+    fail "claude-sandbox help did not print a Usage: line"
+fi
+bash "$CLI_DEST" no-such-command >/dev/null 2>&1
+[ "$?" -eq 2 ] && pass || fail "claude-sandbox unknown subcommand did not exit 2"
+
+# Version stamp: recorded from the installing clone (tag when on a tag,
+# hash otherwise — same `git describe` the installer runs), and reported
+# by `claude-sandbox version`.
+VERSION_DEST="$PREFIX/usr/libexec/claude-sandbox/version"
+EXPECT_VER="$(git -C "$REPO_ROOT" describe --tags --always --dirty 2>/dev/null || echo unknown)"
+if [ "$(cat "$VERSION_DEST" 2>/dev/null)" = "$EXPECT_VER" ]; then
+    pass
+else
+    fail "version stamp at $VERSION_DEST is '$(cat "$VERSION_DEST" 2>/dev/null)', expected '$EXPECT_VER'"
+fi
+if [ "$(CLAUDE_SANDBOX_VERSION_FILE="$VERSION_DEST" bash "$CLI_DEST" version)" = "claude-sandbox $EXPECT_VER" ]; then
+    pass
+else
+    fail "claude-sandbox version did not report the stamped value"
+fi
+
 # Guard scripts + the /verify-sandbox phase-1 battery placed OFF the rw
 # set under /usr/libexec (prefixed), like the relocated real binary. All
 # executable, mode 0755 (the battery rides along for the same off-PATH,
@@ -137,7 +178,7 @@ fi
 # shadow, both guard scripts, the managed-settings + user-settings jq
 # merges (each must be a fixed point), and the conf.
 declare -A SUM_A
-for f in "$SHADOW_DEST" "$VERIFY_DEST" "$GATE_DEST" "$BATTERY_DEST" "$MANAGED" "$SETTINGS" "$CONF_DEST"; do
+for f in "$SHADOW_DEST" "$CLI_DEST" "$VERSION_DEST" "$VERIFY_DEST" "$GATE_DEST" "$BATTERY_DEST" "$MANAGED" "$SETTINGS" "$CONF_DEST"; do
     SUM_A["$f"]="$(sha256sum "$f" | awk '{print $1}')"
 done
 
@@ -145,7 +186,7 @@ if ! run_install; then
     fail "second install run exited non-zero"
 fi
 
-for f in "$SHADOW_DEST" "$VERIFY_DEST" "$GATE_DEST" "$BATTERY_DEST" "$MANAGED" "$SETTINGS" "$CONF_DEST"; do
+for f in "$SHADOW_DEST" "$CLI_DEST" "$VERSION_DEST" "$VERIFY_DEST" "$GATE_DEST" "$BATTERY_DEST" "$MANAGED" "$SETTINGS" "$CONF_DEST"; do
     if [ "${SUM_A[$f]}" = "$(sha256sum "$f" | awk '{print $1}')" ]; then
         pass
     else
@@ -294,16 +335,20 @@ echo '{}' | env -u IS_SANDBOX CLAUDE_SANDBOX_GATE_FLAG=/etc/hostname bash "$GATE
 echo '{}' | env -u IS_SANDBOX CLAUDE_CODE_REMOTE=true bash "$GATE_DEST" >/dev/null 2>&1
 [ "$?" -eq 0 ] && pass || fail "gate did not skip on Claude Code Web"
 
-# install.sh stamps/removes the root-owned flag from ALLOW_UNWRAPPED. The
+# install.sh stamps/removes the root-owned flag from the (deliberately
+# scary) DANGEROUSLY_ALLOW_CLAUDE_SANDBOX_UNWRAPPED install seam. The
 # base install above ran without it, so the flag must be ABSENT (gate stays
-# fail-closed by default). A re-install with ALLOW_UNWRAPPED=1 must create
+# fail-closed by default). A re-install with the seam set must create
 # it; a subsequent re-install without it must remove it again.
 GATE_FLAG_DEST="$PREFIX/etc/claude-code/allow-unwrapped"
 [ ! -e "$GATE_FLAG_DEST" ] && pass || fail "default install left the gate escape-hatch flag present (should be fail-closed)"
-ALLOW_UNWRAPPED=1 run_install
-[ -f "$GATE_FLAG_DEST" ] && pass || fail "ALLOW_UNWRAPPED=1 install did not stamp $GATE_FLAG_DEST"
+DANGEROUSLY_ALLOW_CLAUDE_SANDBOX_UNWRAPPED=1 run_install
+[ -f "$GATE_FLAG_DEST" ] && pass || fail "DANGEROUSLY_ALLOW_CLAUDE_SANDBOX_UNWRAPPED=1 install did not stamp $GATE_FLAG_DEST"
 run_install
-[ ! -e "$GATE_FLAG_DEST" ] && pass || fail "re-install without ALLOW_UNWRAPPED did not remove a stale $GATE_FLAG_DEST"
+[ ! -e "$GATE_FLAG_DEST" ] && pass || fail "re-install without DANGEROUSLY_ALLOW_CLAUDE_SANDBOX_UNWRAPPED did not remove a stale $GATE_FLAG_DEST"
+# The retired short name must no longer stamp the flag (renamed 2026-07-24).
+ALLOW_UNWRAPPED=1 run_install
+[ ! -e "$GATE_FLAG_DEST" ] && pass || fail "retired ALLOW_UNWRAPPED=1 name still stamps the gate escape-hatch flag"
 
 VERIFY_OUT="$(echo '{}' | env -u IS_SANDBOX bash "$VERIFY_DEST" 2>/dev/null)"
 VERIFY_RC=$?

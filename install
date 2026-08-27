@@ -1,10 +1,29 @@
 #!/usr/bin/env bash
-# claude-sandbox installer shim. Resolves its own dir and execs the
-# real installer under .devcontainer/claude-sandbox/.
+# claude-sandbox installer shim. Resolves WHICH REVISION to install, then
+# execs the real installer under .devcontainer/claude-sandbox/.
 #
-#   git clone https://github.com/gilesknap/claude-sandbox.git
-#   cd claude-sandbox
-#   ./install
+#   cd /tmp && rm -rf claude-sandbox && \
+#       git clone https://github.com/DiamondLightSource/claude-sandbox && \
+#       claude-sandbox/install
+#
+# By default this installs the newest stable RELEASE TAG — not the tip of
+# the default branch. The one-liner above clones `main`, and main is
+# unreleased work; `claude-sandbox update` has always installed the newest
+# tag, so without this a first install and every later update disagreed
+# about what "current" means.
+#
+#   install                  newest stable release tag (see --release)
+#   install --here           this working tree, exactly as checked out
+#   install --release [REF]  REF, or the newest stable tag when REF is
+#                            omitted — even if the clone is pinned/dirty
+#
+# The default REFUSES rather than silently retargeting a clone that is
+# pinned (detached HEAD or a non-default branch) or locally modified.
+# Teams pin a revision deliberately and bump it as a reviewed act
+# (docs/how-to/sandbox-a-team-devcontainer.md, ADR 0017); quietly
+# installing something newer than the pin would defeat the pin, on every
+# teammate's next rebuild, with nothing in the diff to show for it.
+# Automated callers that mean "install this checkout" pass --here.
 #
 # Target is rootless devcontainers where the in-container user is
 # already root; no sudo prefix needed. The UID check below is a
@@ -14,9 +33,105 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+usage() {
+    cat >&2 <<'USAGE'
+Usage: install [--here | --release [REF]]
+
+  (no flag)         Install the newest stable release tag. Refuses if this
+                    clone is pinned (detached HEAD / non-default branch) or
+                    has local modifications.
+  --here            Install this working tree, exactly as checked out.
+  --release [REF]   Install REF (default: newest stable release tag),
+                    retargeting the clone even if pinned or modified.
+USAGE
+}
+
+MODE=default
+REF=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --here)
+            MODE=here; shift ;;
+        --release)
+            MODE=release; shift
+            # An optional bare REF may follow; anything starting with `-`
+            # is the next flag, not a ref.
+            if [ $# -gt 0 ] && [ "${1#-}" = "$1" ]; then REF="$1"; shift; fi ;;
+        -h|--help)
+            usage; exit 0 ;;
+        *)
+            echo "claude-sandbox: unknown argument '$1'" >&2
+            usage; exit 2 ;;
+    esac
+done
+
 if [ "$(id -u)" -ne 0 ] && [ "${CLAUDE_SANDBOX_SMOKE:-0}" != "1" ]; then
     echo "claude-sandbox: refusing — run as root (apt-get install needs it)." >&2
     exit 1
 fi
 
-exec bash "$SCRIPT_DIR/.devcontainer/claude-sandbox/install.sh" "$@"
+# A smoke run tests the checkout it was pointed at; it must never retarget
+# that checkout out from under the test.
+if [ "${CLAUDE_SANDBOX_SMOKE:-0}" = "1" ]; then
+    MODE=here
+fi
+
+git_here() { git -C "$SCRIPT_DIR" "$@"; }
+
+if [ "$MODE" != here ] && ! git_here rev-parse --git-dir >/dev/null 2>&1; then
+    if [ "$MODE" = release ]; then
+        echo "claude-sandbox: --release needs a git clone, and $SCRIPT_DIR is not one." >&2
+        exit 1
+    fi
+    # A tarball/vendored copy has no revisions to choose between.
+    echo "claude-sandbox: not a git clone — installing these files as they are." >&2
+    MODE=here
+fi
+
+if [ "$MODE" = default ]; then
+    branch="$(git_here symbolic-ref --short -q HEAD || true)"
+    default_branch="$(git_here symbolic-ref --short -q refs/remotes/origin/HEAD || true)"
+    default_branch="${default_branch#origin/}"
+    pinned=""
+    if [ -z "$branch" ]; then
+        pinned="checked out at a pinned revision ($(git_here rev-parse --short HEAD))"
+    elif [ -n "$default_branch" ] && [ "$branch" != "$default_branch" ]; then
+        pinned="on branch '$branch', not '$default_branch'"
+    elif [ -n "$(git_here status --porcelain)" ]; then
+        pinned="locally modified"
+    fi
+    if [ -n "$pinned" ]; then
+        echo "claude-sandbox: this clone is $pinned — refusing to silently replace it with the newest release." >&2
+        echo "  install --here            install this checkout as it is" >&2
+        echo "  install --release [REF]   retarget to REF (default: newest release tag)" >&2
+        exit 1
+    fi
+fi
+
+if [ "$MODE" != here ]; then
+    if [ -z "$REF" ]; then
+        # Tolerate being offline / having no remote: a clone made by the
+        # documented one-liner already carries every tag.
+        git_here fetch --tags --quiet 2>/dev/null || true
+        # Newest STABLE release tag. Prereleases carry a hyphen
+        # (3.0.0-beta.1) and are excluded — "stay current" must never hand
+        # someone a beta. `!found` prints only the first match while still
+        # consuming all input: closing the pipe early would SIGPIPE
+        # `git tag` and, under `set -o pipefail`, abort the install.
+        REF="$(git_here tag --sort=-v:refname | awk '!/-/ && !found { print; found=1 }')"
+    fi
+    if [ -z "$REF" ]; then
+        echo "claude-sandbox: no release tags found — installing $(git_here rev-parse --short HEAD)." >&2
+    else
+        echo "claude-sandbox: installing release $REF"
+        # `git checkout` rewrites THIS FILE while bash is still reading it
+        # incrementally, which corrupts the rest of the run. Put everything
+        # after the checkout in argv (bash -c), never in this file, so
+        # nothing reads the old bytes once they are gone.
+        exec bash -c \
+            'git -C "$1" checkout --quiet "$2" && exec bash "$1/install" --here' \
+            claude-sandbox-install "$SCRIPT_DIR" "$REF"
+    fi
+fi
+
+exec bash "$SCRIPT_DIR/.devcontainer/claude-sandbox/install.sh"

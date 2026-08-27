@@ -7,7 +7,7 @@ shadow, the relocated real binary, the [integrity
 guard](../explanations/integrity-guard), and the [network egress
 jail](network-egress-jail).
 
-Image: `ghcr.io/gilesknap/claude-sandbox:latest` (amd64 + arm64), built
+Image: `ghcr.io/diamondlightsource/claude-sandbox:latest` (amd64 + arm64), built
 by CI from the same `install.sh` the devcontainer runs — plus a weekly
 rebuild so the baked-in Claude tracks upstream releases. The in-image
 auto-updater is deliberately disabled (that is part of the integrity
@@ -31,7 +31,7 @@ container update itself.
 Fetch the launcher and put it on your `PATH`:
 
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/gilesknap/claude-sandbox/main/container/claude-container
+curl -fsSLO https://raw.githubusercontent.com/DiamondLightSource/claude-sandbox/main/container/claude-container
 chmod +x claude-container
 ```
 
@@ -42,7 +42,7 @@ or commit SHA (any ref that contains `container/claude-container`) and
 re-fetch the same pinned ref when you update:
 
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/gilesknap/claude-sandbox/<tag-or-commit>/container/claude-container
+curl -fsSLO https://raw.githubusercontent.com/DiamondLightSource/claude-sandbox/<tag-or-commit>/container/claude-container
 ```
 
 You don't have to watch this repo for launcher fixes: each published
@@ -64,9 +64,9 @@ claude-container
 The first run pulls the image, creates a container named after the
 project directory, and starts sandboxed `claude` with the project
 mounted read-write. Later runs restart the same container. Everything
-you know from the devcontainer applies inside: `/verify-sandbox` runs
-the live battery, the egress jail is on by default, and plain `claude`
-can only ever resolve to the shadow.
+you know from the devcontainer applies inside: `claude-sandbox verify`
+runs the live battery, the egress jail is on by default, and plain
+`claude` can only ever resolve to the shadow.
 
 ## One named container per project
 
@@ -89,16 +89,20 @@ project directory** rather than a throwaway `--rm` container:
 
 ## Authenticate to forges
 
-Inside the container, the clone is baked at `/opt/claude-sandbox`, so
-the usual recipes work:
+Inside the container, the `claude-sandbox` CLI is on PATH, so the usual
+commands work:
 
 ```bash
-just --justfile /opt/claude-sandbox/justfile gh-auth
-just --justfile /opt/claude-sandbox/justfile glab-auth gitlab.example.com
+claude-sandbox gh-auth
+claude-sandbox glab-auth gitlab.example.com
 ```
 
 See [Authenticate with forges](authenticate-with-forges) for the
 recommended PAT scopes.
+
+Note: inside the published image, update by pulling a newer image and
+recreating the container (`claude-container --recreate`), not with
+`claude-sandbox update` — the CLI refuses there.
 
 ## Persist login and memory
 
@@ -116,7 +120,6 @@ through automatically when the container is created:
 
 ```bash
 CLAUDE_SANDBOX_NO_FORGE=1 claude-container          # no forge creds inside
-CLAUDE_SANDBOX_EGRESS_JAIL=0 claude-container       # jail off (not recommended)
 ```
 
 They are frozen into the container at create time — `--recreate` to
@@ -153,7 +156,7 @@ device access for Claude is still granted per-IP with `allow-ip`.
 ## Update
 
 ```bash
-podman pull ghcr.io/gilesknap/claude-sandbox:latest
+podman pull ghcr.io/diamondlightsource/claude-sandbox:latest
 claude-container --recreate
 ```
 
@@ -174,9 +177,7 @@ reads it on every invocation; it is not remembered).
   exists, but under *rootful* docker the egress jail's pasta attach is
   denied (`Couldn't open user namespace ... Permission denied` — differing
   namespace/ptrace semantics), so `claude` fail-closes at launch. Rootless
-  docker is untested. If you must use such an engine, the jail can be
-  disabled per session (`CLAUDE_SANDBOX_EGRESS_JAIL=0`) — a weaker
-  posture; prefer rootless podman.
+  docker is untested. Prefer rootless podman.
 - **Linux only** — the sandbox is built on Linux namespaces. macOS with
   `podman machine` runs the Linux image in a VM and should work, but is
   untested.

@@ -38,27 +38,66 @@ jailed; `=0` restores 0005's world. Don't describe egress as "open by default"
 anymore, and don't re-add an "opt-in / off by default" framing — that was the
 pre-2026-06-18 state.
 
-## Stub-resolver DNS — pasta `--dns-forward` (issue #60, fixed)
+## ALL DNS goes through pasta `--dns-forward` (issues #60, #11 — both fixed)
 
-The per-resolver `/32` punch ONLY works when `/etc/resolv.conf` resolvers are
-**routable**. On a personal Ubuntu desktop the sole resolver is a **loopback
-stub** — `127.0.0.53` (systemd-resolved) or Tailscale MagicDNS — which lives in
-the **host** netns and answers nothing inside the jail, so every lookup is
-`ECONNREFUSED` and the API reads as down ("works at the office, fails at home").
-FIX (shipped, ADR 0015 updated): pasta attaches with `--dns-forward 192.0.2.53`
-(RFC5737 TEST-NET — non-routable, outside every blackhole) → it listens on that
-addr *inside* the netns and relays DNS to the host's real resolvers (pasta is in
-the host netns, so it reaches `127.0.0.53`). When `claude-shadow`'s
-`jail_stage_dns()` sees an all-loopback resolv.conf it binds a one-line
-`nameserver 192.0.2.53` over Claude's `/etc/resolv.conf` (gated env
-`CLAUDE_SANDBOX_JAIL_RESOLV`, applied in `bwrap_argv_build`) and the holder
-routes that `/32` via gw. Routable-resolver hosts are byte-for-byte unchanged
-(forwarder staged but unused). **Don't** "fix" stub DNS by punching loopback
+`jail_stage_dns()` **always** binds a `resolv.conf` naming `192.0.2.53` over
+Claude's (via `CLAUDE_SANDBOX_JAIL_RESOLV`, applied in `bwrap_argv_build`),
+copying the host's `search`/`domain`/`options` lines across — dropping those
+breaks short-name resolution at sites with a search list. pasta attaches with
+`--dns-forward 192.0.2.53` (RFC5737 TEST-NET — non-routable, outside every
+blackhole), listens on that addr *inside* the netns and relays to the host's
+real resolvers from the host netns. One DNS path, not two.
+
+**`--dns-forward` is NOT side-effect-free — this is the trap.** It implies
+pasta's `--dns-host` = the **first** resolver in the host's `resolv.conf`, and
+pasta reverse-translates that host's port-53 replies to come from `192.0.2.53`.
+Any client querying resolver #1 *directly* gets a reply from an unexpected
+source, which the kernel silently discards on a connected UDP socket. So the old
+"stage the forwarder only on all-loopback hosts, leave routable hosts unchanged"
+design **poisoned resolver #1 on every routable-resolver host**: glibc absorbed
+it as a ~10s fallback, Go clients (`glab`) failed outright, and it read as "that
+DNS server is down". The only coherent choices are never enable the forwarder,
+or route everything through it. We route everything through it.
+
+Two symptoms that look like a network fault but are this: a resolver that is
+`ping`-able and answers from outside the jail but times out inside, and DNS that
+"works but is slow" for glibc tools while Go tools fail.
+
+Original driver (#60): on a personal Ubuntu desktop the sole resolver is a
+**loopback stub** — `127.0.0.53` (systemd-resolved) or Tailscale MagicDNS —
+living in the **host** netns, answering nothing inside the jail, so every lookup
+was `ECONNREFUSED` ("works at the office, fails at home"). pasta reaches it.
+**Don't** "fix" stub DNS by punching loopback
 `/32`s (can't route loopback) or by recovering upstreams from
 `/run/systemd/resolve/resolv.conf` (the rejected fallback — fails for Tailscale
 MagicDNS, whose `100.100.100.100` is served locally by tailscaled, not
 routable). `probe-network-jail.sh` mirrors the forwarder path; this dogfood box
 (`127.0.0.53` + Tailscale) is exactly the affected config.
+
+## Diagnostic discipline — a connected UDP socket HIDES a source mismatch
+
+When a UDP service (DNS especially) "doesn't answer" inside the jail, do not
+conclude the packet was dropped until you have looked with an **unconnected**
+socket. `nslookup`, `dig`, glibc, Go and a bash `/dev/udp` probe all *connect*
+the socket, so the kernel discards any reply whose source differs from the
+address queried — a translated reply and a lost packet are indistinguishable.
+That cost real time in #11: the server was answering correctly the whole while.
+
+Reveal it with `recvfrom` printing the peer (perl is present in the sandbox;
+`dig` and `python3` are not, and `nslookup` is BusyBox — no `-vc`, and it
+predates most flags you'd reach for):
+
+```bash
+perl -e 'use Socket; socket(my $s,PF_INET,SOCK_DGRAM,0);
+  send($s,$Q,0,sockaddr_in(53,inet_aton($ns)));
+  my $f=recv($s,my $b,512,0); my($p,$a)=sockaddr_in($f);
+  print inet_ntoa($a)," ",length($b),"\n"'
+```
+
+Reply source ≠ address queried → address translation (pasta), not a firewall.
+Corollary for triage: compare **all** resolvers, not just the failing one. "Only
+the first one is broken" is the signature of `--dns-host`, and a single-resolver
+test cannot see it.
 
 ## Runtime target — rootless Podman (NOT Docker-bridge)
 
@@ -119,9 +158,18 @@ subnet, gateway, resolv.conf DNS). On an all-RFC1918 site (Diamond = all
 more-specific than the blackhole so the whole local /20 stays reachable. So the
 holder: `blackhole` 10/8 + 172.16/12 + 192.168/16 + the **connected subnet**,
 `unreachable` 169.254/16; then punches back ONLY the **gateway** (/32 on-link),
-**DNS resolvers** (/32 via gw, from /etc/resolv.conf — resolution ≠ lateral
-movement), and **`allow-ip`** devices (/32 via gw). Blackholes fail-closed;
-DNS/device punches fail-soft.
+the **pasta DNS forwarder** `192.0.2.53` (/32 via gw — non-routable TEST-NET,
+terminates in pasta, NOT a real host), and **`allow-ip`** devices (/32 via gw).
+Blackholes fail-closed; forwarder/device punches fail-soft.
+
+**Resolvers get NO /32 — do not re-add them** (issue #11, fixed 2026-08-14).
+Until then the holder punched a /32 per `/etc/resolv.conf` resolver, justified
+as "resolution ≠ lateral movement". That reasoning was wrong: the punch is a
+route, not a protocol filter, so it opened a real internal host on **every**
+port, not just 53 — the largest remaining hole in the blackhole, aimed squarely
+at infrastructure. All DNS now goes through the forwarder, so the jail needs no
+route to any resolver and the holes are gone. Re-adding a resolver punch (or an
+`allow-ip`-style entry for a DNS server) reopens it.
 
 **DEAD ALTERNATIVE — do not retry:** pasta-creates-the-ns + bwrap-nested-inside.
 pasta spawns a pid+mount ns it can't give bwrap a usable `/proc` for → bwrap
@@ -136,7 +184,7 @@ Route-immutability holds because the netns/routes are owned by the holder's
 ANCESTOR userns (caps raised inside Claude's own userns don't reach it): verified
 route del/punch + device-add all EPERM, RFC1918 stays blocked.
 **verify-sandbox needs NO jail-aware variant** — check 06 asserts `CapEff=0` (not
-CapBnd), which holds; the full 18-check battery passes live in a jailed session.
+CapBnd), which holds; the full 20-check battery passes live in a jailed session.
 Cap-ceiling diligence is **VERIFIED** (`probe-network-jail-caps.sh`, unjailed,
 2026-06-18): the full `CapBnd` ceiling can't be re-raised to weaken another bwrap
 protection. Even with a full *effective* cap set gained via a child `unshare

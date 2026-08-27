@@ -42,11 +42,11 @@ disabling the jail for that host (see below).
 ## Keep a lab device or internal forge reachable
 
 Device IPs you still need (an EPICS IOC, a PMAC, your internal GitLab) must be
-punched through the blackhole with `allow-ip` in the host-global config. Edit the
-clone conf at `.devcontainer/claude-sandbox.conf`:
+punched through the blackhole with `allow-ip` in the sandbox config. Edit
+`/etc/claude-sandbox.conf` in the container (you are root):
 
 ```ini
-# .devcontainer/claude-sandbox.conf  (installed to /etc/claude-sandbox.conf)
+# /etc/claude-sandbox.conf
 allow-ip = 172.23.142.119   # internal GitLab forge
 allow-ip = 172.23.1.3       # an EPICS IOC / PMAC
 ```
@@ -56,20 +56,11 @@ Diamond's internal GitLab (`172.23.142.119`) so `git push` to the forge keeps
 working. `allow-ip` lives in `/etc`, **not** the workspace, so a compromised
 session cannot widen its own reach.
 
-Apply it the same way as any conf change: re-run `./install`, or rebuild the
-devcontainer (postCreate re-stamps the conf).
-
-## Disable the jail
-
-Two ways; env wins over conf:
-
-- **Per host** — uncomment `egress-jail = 0` in
-  `.devcontainer/claude-sandbox.conf`, then re-run `./install` (or rebuild).
-- **Per session** — `CLAUDE_SANDBOX_EGRESS_JAIL=0 claude`, or set it in your
-  devcontainer's `remoteEnv`.
-
-Disabling restores the open-egress world of {ref}`adr-network-egress-open`:
-Claude shares the host network namespace, with no per-process firewall.
+The next `claude` launch picks the change up. Edits are per-devcontainer
+and not persisted — a rebuild, re-install, or `claude-sandbox update`
+restores the shipped defaults, so re-apply afterwards (teams bake a
+persistent conf in at install time — see
+[Sandbox a team devcontainer](sandbox-a-team-devcontainer.md)).
 
 ## A note on Channel Access for Claude
 

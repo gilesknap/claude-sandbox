@@ -36,7 +36,7 @@ html_css_files = ["custom.css"]
 html_show_sphinx = False
 
 html_theme_options = {
-    "github_url": "https://github.com/gilesknap/claude-sandbox",
+    "github_url": "https://github.com/DiamondLightSource/claude-sandbox",
     "use_edit_page_button": True,
     "navigation_with_keys": False,
     "icon_links": [],
@@ -46,7 +46,7 @@ html_theme_options = {
 
 # Wires up the "edit this page" button.
 html_context = {
-    "github_user": "gilesknap",
+    "github_user": "DiamondLightSource",
     "github_repo": "claude-sandbox",
     "github_version": "main",
     "doc_path": "docs",

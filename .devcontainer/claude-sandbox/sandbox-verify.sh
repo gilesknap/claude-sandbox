@@ -65,7 +65,10 @@ if [ -d /run/secrets ] && [ -n "$(ls -A /run/secrets 2>/dev/null)" ]; then
 fi
 
 if [ "${#problems[@]}" -gt 0 ]; then
-    msg="⚠️  claude-sandbox: inside the shadow but integrity checks FAILED: $(IFS='; '; printf '%s' "${problems[*]}"). Run /verify-sandbox, then re-run claude-sandbox/install."
+    # `claude-sandbox verify`, not /verify-sandbox: this hook is global
+    # (managed settings), so it fires in workspaces that are not a
+    # claude-sandbox clone, where the project command does not exist.
+    msg="⚠️  claude-sandbox: inside the shadow but integrity checks FAILED: $(IFS='; '; printf '%s' "${problems[*]}"). Run \`claude-sandbox verify\` from a terminal outside this session, then re-run claude-sandbox/install."
     emit "$msg" "$msg"
     exit 0
 fi

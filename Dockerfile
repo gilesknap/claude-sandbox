@@ -5,10 +5,10 @@
 #                    DLS ubuntu-devcontainer image already ships the
 #                    dev-tooling baseline (git, curl, ca-certificates, jq,
 #                    sudo) the bash installer needs; everything else
-#                    (bubblewrap, just, nodejs, gh) is apt-installed by
+#                    (bubblewrap, nodejs, gh) is apt-installed by
 #                    `.devcontainer/claude-sandbox/install.sh` at
 #                    postCreate.
-#   claude-sandbox — the PUBLISHED image (ghcr.io/gilesknap/claude-sandbox,
+#   claude-sandbox — the PUBLISHED image (ghcr.io/diamondlightsource/claude-sandbox,
 #                    built by .github/workflows/container.yml): sandboxed
 #                    Claude Code for hosts WITHOUT a devcontainer workflow;
 #                    rootless podman/docker + the container/claude-container
@@ -25,13 +25,18 @@ FROM developer AS claude-sandbox
 # source of truth) and passes it in; the launcher reads the label from
 # the pulled image to warn when the user's copy is out of date.
 ARG LAUNCHER_VERSION=""
-LABEL io.gilesknap.claude-sandbox.launcher-version="${LAUNCHER_VERSION}"
+LABEL io.diamondlightsource.claude-sandbox.launcher-version="${LAUNCHER_VERSION}"
+
+# What `claude-sandbox version` reports inside the image. .dockerignore
+# excludes .git, so stamp_version can't run `git describe` at build —
+# CI passes the ref name (tag on releases, `main` otherwise) instead.
+ARG CLAUDE_SANDBOX_VERSION=""
 
 COPY . /opt/claude-sandbox
 WORKDIR /opt/claude-sandbox
 
 # Run install.sh's main() sequence MINUS two build-time-inappropriate
-# steps, via the same source-guard seam promote.sh uses:
+# steps, via install.sh's source-guard seam:
 #   - probe_userns_or_refuse: a build-time probe proves the BUILDER can
 #     nest namespaces, not the host that will run the image (and BuildKit
 #     confinement varies by builder).
@@ -48,10 +53,12 @@ RUN bash -c ' \
     source .devcontainer/claude-sandbox/install.sh; \
     probe_or_refuse; \
     install_file "$SCRIPT_DIR/claude-shadow" "$(prefixed /usr/local/bin/claude)"; \
+    install_file "$SCRIPT_DIR/claude-sandbox" "$(prefixed /usr/local/bin/claude-sandbox)"; \
     apt_install; \
     install_claude_binary; \
     ensure_cred_dirs; \
     install_conf; \
+    stamp_version; \
     install_guard_scripts; \
     wire_managed_settings; \
     wire_gate_flag; \

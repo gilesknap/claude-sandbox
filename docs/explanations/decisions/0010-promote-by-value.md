@@ -6,7 +6,11 @@ Date: 2026-05-12
 
 ## Status
 
-Accepted
+Superseded by {ref}`adr-remove-promote` (ADR 17): `just promote` was removed on
+2026-07-24 — copy-by-value proliferated the security-critical machinery into
+per-project copies with no update channel. Two disciplines recorded here outlive
+the mechanism and are restated in ADR 17: keep **dogfood ≈ guest**, and never
+auto-edit `devcontainer.json`.
 
 ## Context
 

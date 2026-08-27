@@ -43,10 +43,10 @@ set -uo pipefail
 # naive user can't trivially avoid the policy. Document it only in an
 # internal runbook that makes the user acknowledge they are giving up
 # credential isolation.
-[ "${CLAUDE_SANDBOX_ALLOW_UNWRAPPED:-}" = "1" ] && exit 0
+[ "${DANGEROUSLY_ALLOW_CLAUDE_SANDBOX_UNWRAPPED:-}" = "1" ] && exit 0
 
 echo "BLOCKED by IT policy: Claude Code must be run inside claude-sandbox so host
-credentials stay isolated. Set it up: https://github.com/gilesknap/claude-sandbox
+credentials stay isolated. Set it up: https://github.com/DiamondLightSource/claude-sandbox
 (clone + ./install, then launch claude inside the devcontainer)." >&2
 exit 2
 ```
@@ -77,7 +77,7 @@ user/project hooks, which is what you want.
 
 ## Knobs
 
-- **Hard enforcement.** Drop the `CLAUDE_SANDBOX_ALLOW_UNWRAPPED` line
+- **Hard enforcement.** Drop the `DANGEROUSLY_ALLOW_CLAUDE_SANDBOX_UNWRAPPED` line
   from the gate to remove the bypass entirely.
 - **Claude Code on the web.** Add `[ "${CLAUDE_CODE_REMOTE:-}" = "true" ]
   && exit 0` as the first check if your org uses Claude Code on the web
@@ -99,5 +99,5 @@ this policy merely steers people toward.
 - [The integrity guard](../explanations/integrity-guard.md) — the
   in-sandbox counterpart, which blocks prompts when Claude is launched
   unwrapped *inside* a configured host.
-- [Promote to a workspace](promote-to-a-workspace.md) — make an
-  individual repo a self-sufficient sandbox host.
+- [Sandbox a team devcontainer](sandbox-a-team-devcontainer.md) — wire a
+  project's devcontainer to install the sandbox at a pinned tag.

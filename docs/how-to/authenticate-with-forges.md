@@ -3,24 +3,22 @@
 Give the sandboxed Claude a `gh` / `glab` token so `git push` works,
 without leaking the token into your shell history.
 
-```{include} ../_snippets/clone-note.md
-```
-
 ## Authenticate
 
 ```bash
-just gh-auth
-just glab-auth
-just glab-auth gitlab.diamond.ac.uk
+claude-sandbox gh-auth
+claude-sandbox glab-auth
+claude-sandbox glab-auth gitlab.example.com
 ```
 
-- `just gh-auth` authenticates `github.com`.
-- `just glab-auth` (no argument) authenticates `gitlab.com`.
-- `just glab-auth gitlab.diamond.ac.uk` authenticates the self-hosted
-  Diamond GitLab instance.
+- `claude-sandbox gh-auth` authenticates `github.com`.
+- `claude-sandbox glab-auth` (no argument) authenticates the self-hosted
+  Diamond GitLab instance, `gitlab.diamond.ac.uk`.
+- `claude-sandbox glab-auth gitlab.example.com` authenticates any other
+  GitLab instance (including `gitlab.com`).
 
-Each recipe walks you through a fine-grained-PAT prompt, feeds the token
-to the respective CLI's `auth login`, and unsets the variable
+Each command walks you through a fine-grained-PAT prompt, feeds the
+token to the respective CLI's `auth login`, and unsets the variable
 afterwards. The token never enters shell history.
 
 ## Result
@@ -45,15 +43,16 @@ radius small:
 
 - **Fine-grained, single repo** — grant write access only to the
   repository you are actively working on.
-- **Short expiry** — 7–30 days. Re-pasting via `just gh-auth` takes
-  seconds.
+- **Short expiry** — 7–30 days. Re-pasting via `claude-sandbox gh-auth`
+  takes seconds.
 - **No `workflow` scope** unless Claude needs to edit GitHub Actions
   files. **No `admin:*` or org-wide write scopes.**
 - **GitLab** — equivalent fine-grained project tokens; `api` scope only
   if you need push, otherwise `read_repository` + `write_repository`.
 
-`just gh-auth` / `just glab-auth` keep the token out of shell history
-but do **not** enforce scope discipline — that is yours.
+`claude-sandbox gh-auth` / `claude-sandbox glab-auth` keep the token out
+of shell history but do **not** enforce scope discipline — that is
+yours.
 
 ## See also
 

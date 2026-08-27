@@ -42,10 +42,10 @@ reachable so Claude still works.
 
 It is **fail-closed** — if `/dev/net/tun`, `pasta`, or `unshare` is
 missing, `claude` refuses to launch rather than silently dropping back to
-open egress. The escape hatch is `CLAUDE_SANDBOX_EGRESS_JAIL=0` (env, per
-session, or `egress-jail = 0` in `/etc/claude-sandbox.conf`; env wins),
-which restores the older shared-host-netns world (`--share-net`, NOT
-unshared; {ref}`adr-network-egress-open`). Only that `=0` path shares the
+open egress. An operator opt-out exists that restores the older
+shared-host-netns world (`--share-net`, NOT unshared;
+{ref}`adr-network-egress-open`); it is deliberately not documented here —
+weakening the sandbox is discouraged. Only that opt-out path shares the
 host netns, which is what makes the host's network identity disclosable
 from inside.
 

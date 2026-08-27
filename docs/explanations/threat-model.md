@@ -163,7 +163,7 @@ blast-radius arithmetic:
 - GitLab gets the equivalent: project-scoped tokens, `api` only if you need
   push, otherwise `read_repository` + `write_repository`.
 
-The `just gh-auth` / `just glab-auth` helpers keep the token out of shell
+The `claude-sandbox gh-auth` / `claude-sandbox glab-auth` helpers keep the token out of shell
 history, but they do **not** enforce scope — that part is irreducibly yours.
 
 When a session genuinely does not need to push, the right move is to remove the
@@ -196,8 +196,8 @@ It is **fail-closed**: if `/dev/net/tun`, pasta, or `unshare` is unavailable,
 escape hatch `CLAUDE_SANDBOX_EGRESS_JAIL=0` (env, or `egress-jail = 0` in
 `/etc/claude-sandbox.conf`) restores the older shared-host-netns world of
 {ref}`adr-network-egress-open`. Normal, non-Claude shells keep host networking
-untouched. The operational recipe — adding the required `--device=/dev/net/tun`,
-allow-listing a device, or turning the jail off — is in
+untouched. The operational recipe — adding the required `--device=/dev/net/tun`
+or allow-listing a device — is in
 [Configure the network egress jail](../how-to/network-egress-jail.md); the config
 keys are in [configuration](../reference/configuration.md).
 

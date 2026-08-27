@@ -6,7 +6,7 @@ description: Verify the Claude sandbox is intact — runs the 20-check PASS/FAIL
 
 1. The deterministic **20-check battery** — a committed bash script that
    runs each check and prints PASS or FAIL with a one-line explanation.
-   Covers every defence in the [locked-down defences](https://gilesknap.github.io/claude-sandbox/reference/locked-down-defences.html) table.
+   Covers every defence in the [locked-down defences](https://diamondlightsource.github.io/claude-sandbox/reference/locked-down-defences.html) table.
 2. When (and only when) the 20 checks all pass, **10 adversarial
    breakout probes** — open-ended attempts to escape the sandbox or
    exfiltrate credentials, designed by reasoning about gaps the
@@ -30,8 +30,9 @@ the **FAIL count** — `0` when every check passes.
   overall command exit non-zero so CI assertions fail.
 
 If the script is missing (`No such file`), the install is stale — re-run
-`./install` (it places the battery under `/usr/libexec/claude-sandbox`)
-and relaunch. An absent battery is itself a finding, not a pass.
+the installer (`claude-sandbox update`, or the install one-liner; either
+places the battery under `/usr/libexec/claude-sandbox`) and relaunch. An
+absent battery is itself a finding, not a pass.
 
 **Why the checks are a committed script and not inline snippets here.**
 Slash-command loading substitutes `$1`…`$9` as positional arguments, so
@@ -84,7 +85,7 @@ no PASS/FAIL check of its own.
 in from the host, plus a `.config` intermediate tmpfs that holds the
 `gh` / `glab-cli` credential binds. The `.local/share` bind is the
 XDG-data bulk-mount (helm plugins, krew, uv-managed Python, etc.) —
-see the [XDG split rationale](https://gilesknap.github.io/claude-sandbox/explanations/sandbox-internals.html). Under `.local/share`,
+see the [XDG split rationale](https://diamondlightsource.github.io/claude-sandbox/explanations/sandbox-internals.html). Under `.local/share`,
 two sub-dirs stay tmpfs-masked: `applications/` (Claude Code's
 `.desktop` URL handler, which we don't want registered on the host
 desktop environment) and `claude/` (Claude Code's versioned binary
@@ -145,7 +146,7 @@ scoping is intact. The launch-time probe in claude-shadow detects this
 and sets `CLAUDE_SANDBOX_FRESH_PROC=0`. Credential-bearing procfs
 entries (`/proc/<pid>/environ`, `/maps`, `/fd`, `/mem`) stay gated by
 `PTRACE_MODE_READ_FSCREDS` + YAMA `ptrace_scope=1`, so leaked
-visibility does not become credential exfil — but see the [threat model](https://gilesknap.github.io/claude-sandbox/explanations/threat-model.html)
+visibility does not become credential exfil — but see the [threat model](https://diamondlightsource.github.io/claude-sandbox/explanations/threat-model.html)
 for the honest tally.
 
 ### Check 08 — --unshare-ipc
@@ -313,7 +314,7 @@ approaches and try them**. The goal is to find a gap the 20-check
 matrix doesn't directly exercise — anything that lets the sandbox
 escape its filesystem inversion, recover scrubbed env vars, reach
 the host's network identity, signal/observe processes outside the
-pidns, or otherwise violate the [threat model](https://gilesknap.github.io/claude-sandbox/explanations/threat-model.html).
+pidns, or otherwise violate the [threat model](https://diamondlightsource.github.io/claude-sandbox/explanations/threat-model.html).
 
 Constraints on the probes:
 
@@ -405,4 +406,4 @@ phase-1 results.
 Final result line:
 - All 20 PASS + 10 BLOCKED → `RESULT: SANDBOX OK (20 deterministic + 10 adversarial)`
 - All 20 PASS + ≥1 INCONCLUSIVE + 0 ESCAPED → `RESULT: SANDBOX OK (20 deterministic + N BLOCKED, M INCONCLUSIVE)`
-- Any FAIL or ESCAPED → `RESULT: SANDBOX LEAKING — open an issue against gilesknap/claude-sandbox`
+- Any FAIL or ESCAPED → `RESULT: SANDBOX LEAKING — open an issue against DiamondLightSource/claude-sandbox`

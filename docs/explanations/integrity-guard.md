@@ -67,7 +67,7 @@ The escape hatch is a **root-owned flag file**,
 warn-only. The `SessionStart` warning still fires — working unwrapped is
 allowed, but never silent. The operator stamps it with
 `sudo touch /etc/claude-code/allow-unwrapped`, or by re-running
-`./install` with `ALLOW_UNWRAPPED=1` (which also removes it again on a
+`./install` with `DANGEROUSLY_ALLOW_CLAUDE_SANDBOX_UNWRAPPED=1` (which also removes it again on a
 later install without that variable).
 
 It is deliberately a flag under `/etc`, **not** an environment variable.
@@ -125,8 +125,8 @@ migrated — those entries are pruned so the guard has a single
 authoritative home in `/etc` and never double-fires.)
 
 The result: short of `root` deleting the `/etc` policy file, you cannot
-accidentally disable the guard. The native devcontainer — and any
-promoted target — is safe-by-construction.
+accidentally disable the guard. Any devcontainer whose `postCreate` runs
+the installer is safe-by-construction.
 
 ## Open follow-up: are `IS_SANDBOX` / `CLAUDE_CODE_REMOTE` themselves forgeable? (deep-review H4)
 

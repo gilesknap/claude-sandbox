@@ -43,17 +43,19 @@ the environment first.
 
 ## Forward a variable
 
-Name it with `pass-env` in the sandbox config. Edit the clone at
-`.devcontainer/claude-sandbox.conf`:
+Name it with `pass-env` in the sandbox config — edit
+`/etc/claude-sandbox.conf` in the container (you are root):
 
 ```ini
-# .devcontainer/claude-sandbox.conf  (installed to /etc/claude-sandbox.conf)
+# /etc/claude-sandbox.conf
 pass-env = DOCKER_HOST
 pass-env = MY_SERVICES_PATH, MY_FIXTURE_DIR
 ```
 
-Comma- or space-separate the names, and/or repeat the key. Then re-run
-`./install`, or rebuild the devcontainer (postCreate re-stamps the conf).
+Comma- or space-separate the names, and/or repeat the key. The next
+`claude` launch picks it up. Edits are per-devcontainer and not
+persisted — a rebuild, re-install, or `claude-sandbox update` restores
+the shipped defaults.
 
 These are **names, not assignments**. The value is read from the
 environment `claude` is launched with, so `pass-env` forwards what your
