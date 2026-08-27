@@ -31,10 +31,11 @@ jobs:
       - name: Mark workspace safe for git
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
-      # This repo is Shell + Dockerfile, both of which Semgrep only supports
-      # at "experimental" maturity, so p/bash and p/dockerfile are thin. The
-      # packs that actually earn their place are p/secrets (committed creds)
-      # and p/github-actions (workflow injection, unpinned actions).
+      # There is no published Semgrep ruleset for shell: p/bash and p/shell are
+      # both 404 at the registry, and Semgrep rates Bash as experimental. So
+      # the shell in this repo is covered by shellcheck in the lint job, not
+      # here. p/secrets (committed creds) and p/github-actions (workflow
+      # injection, unpinned actions) are what this scan actually contributes.
       #
       # No SEMGREP_APP_TOKEN: OSS rules only, no semgrep.dev account, and
       # --metrics=off so no scan telemetry leaves the runner.
@@ -44,7 +45,6 @@ jobs:
       - name: Semgrep scan
         run: |
           semgrep scan \
-            --config p/bash \
             --config p/dockerfile \
             --config p/github-actions \
             --config p/secrets \
